@@ -30,6 +30,10 @@ pub const DEFAULT_RUN_ALL_BASENAMES: &[&str] = &[
     "WORKSPACE.bazel",
     ".bazelversion",
     ".bazelrc",
+    // toolchain and environment pins that dep-info does not show (REQ-023)
+    "flake.nix",
+    "flake.lock",
+    "lean-toolchain",
 ];
 pub const DEFAULT_RUN_ALL_SUFFIXES: &[&str] = &[".bzl"];
 /// A directory name that runs everything wherever it sits (`.cargo/config.toml`

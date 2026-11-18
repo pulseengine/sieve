@@ -163,3 +163,20 @@ fn a_path_with_a_control_character_runs_everything_and_cannot_forge_a_command() 
         "{stderr:?}"
     );
 }
+
+// rivet: verifies REQ-023
+#[test]
+fn toolchain_pins_dep_info_cannot_see_run_everything() {
+    let d = tree("pins");
+    // b/ is claimed by class b, so without the rule each pin would select b only.
+    for p in [
+        "b/flake.nix",
+        "b/flake.lock",
+        "b/lean-toolchain",
+        "b/rust-toolchain.toml",
+        "b/Cargo.lock",
+    ] {
+        let (_, v, _) = classify(&d, &[p], &[]);
+        assert_eq!(v["run_all"], true, "{p} must select everything");
+    }
+}

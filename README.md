@@ -34,7 +34,8 @@ check.
 - any event other than `pull_request`; no base sha; a failed or empty diff;
 - `.github/**`, `.cargo/**` at any level, `Cargo.lock`, `rust-toolchain*`,
   `BUILD`, `*.bzl`, `MODULE.bazel*`, `WORKSPACE*`, `.bazelrc`, `varve.toml`,
-  `varve-realms.toml`, `.gitmodules`, and the sieve config itself (built in, not
+  `varve-realms.toml`, `.gitmodules`, `flake.nix`, `flake.lock`, `lean-toolchain`,
+  and the sieve config itself (built in, not
   removable), plus the config's `[run_all]` additions;
 - a path no class claims, unless the config's `[inert]` list or the docs rule
   covers it (a `.md` or `LICENSE*` file that no non-markdown file names);
@@ -88,3 +89,20 @@ directions. Safety analysis, requirements and design decisions are in
 `artifacts/` (rivet).
 
 License: Apache-2.0.
+
+## Workflow gates
+
+`sieve check-workflows --config sieve.toml` checks a consumer's workflows
+against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
+3 refused):
+
+- (a) every workflow hosting a required context runs on `pull_request`
+  (no `paths:`/`paths-ignore:` key, even empty; no branch or `types:`
+  restriction) and on `merge_group`;
+- (b) a required job is skipped only through the classifier: its `if:` is
+  absent or exactly the form above, wired to a real `sieve classify` step
+  with no env override, no step-level `if:` on outputs, no unobserved
+  `continue-on-error`, no skip inherited through `needs:`. The
+  `[workflows.job_outputs]` map (job to classes) is HAND-MAINTAINED;
+- (c) the classifier selects everything on push, merge_group, no base, a bad
+  base and an empty diff.
