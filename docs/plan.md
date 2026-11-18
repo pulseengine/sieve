@@ -67,3 +67,18 @@ Done in feat/classify-cli: items 1-7. Not done: item 8 (check-workflows).
   file; `git grep` only searches tracked files. Safe direction.
 - Known gap: the walk (no-.git mode) includes untracked files, so local junk
   can only widen selection, never narrow it.
+
+## v0.1.0 shipped (2026-11-18)
+
+Tag v0.1.0 on d2c7c06; release run 44360884817 success; cosign, sums and
+SLSA attestations verified on the published assets. Seam contract:
+pulseengine/sieve#3. Layer entry proposed in pulseengine-layers #64.
+
+## v0.2.0 scope (`rivet release status v0.2.0`)
+
+- REQ-024: one binary, gix instead of the git command line; cargo-util-schemas
+  for manifests; the cargo-metadata control stays optional.
+- REQ-025: rivet-yaml (git tag) for workflow and config YAML.
+- REQ-019 observed-miss counter, REQ-020 classify --explain, REQ-021
+  unresolved inputs in the JSON, REQ-022 bazel-diff evaluation, REQ-013
+  equivalence gate as a tool, REQ-015 plant's oracle, REQ-018 speed.
