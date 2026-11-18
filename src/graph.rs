@@ -102,10 +102,9 @@ fn derive_class(repo: &Repo, cfg: &Config, class: &Class) -> Result<ClassGraph, 
     for z in &class.zephyr {
         walk_zephyr(repo, cfg, z, &mut cg)?;
     }
+    let mut bazel_seen = BTreeSet::new();
     for b in &class.bazel_build {
-        for c in bazel_literal_srcs(repo, b)? {
-            cg.add(c, "bazel");
-        }
+        bazel_walk(repo, b, &mut bazel_seen, &mut cg)?;
     }
     if let Some(s) = &class.bazel_snapshot {
         bazel_snapshot(repo, s, &mut cg)?;
@@ -328,8 +327,10 @@ impl CargoWalk<'_> {
         }
         for p in explicit {
             if let Some(rel) = norm(&mdir, &p) {
-                if mdir.is_empty() && p.ends_with("lib.rs") {
-                    // the root package's library directory, as the reference does
+                if mdir.is_empty() {
+                    // A root-package target claims its directory: its module tree
+                    // (nested inline `mod`, `mod` in tests/benches/examples) lives
+                    // below it, and resolving every module exactly is fragile.
                     let d = dirname(&rel);
                     if !d.is_empty() {
                         cg.add(format!("{d}/"), "cargo");
@@ -510,7 +511,7 @@ fn res() -> &'static Res {
         ))
         .unwrap(),
         include_dir: Regex::new(r"\binclude_dir!\s*\(\s*([^)]*)\)").unwrap(),
-        module: Regex::new(r"(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;").unwrap(),
+        module: Regex::new(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;").unwrap(),
         join_chain: Regex::new(r#"(?:\.join\(\s*"(?:[^"\\]|\\.)*"\s*\)\s*)+"#).unwrap(),
         join_lit: Regex::new(&format!(r"\.join\(\s*{STR}\s*\)")).unwrap(),
         incbin: Regex::new(r#"\.incbin\s+(?:\\?"([^"\\]*)\\?"|(\S+))"#).unwrap(),
@@ -597,7 +598,7 @@ fn scan_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) -> Vec<Stri
         // A literal naming an existing repository path relative to the
         // package root (cargo's cwd for tests and the build): a runtime read.
         // A leading `/` is tried relative too: format!("{}/../x", env!("CARGO_MANIFEST_DIR")).
-        if lit.contains('/') || lit.contains('.') {
+        if !lit.is_empty() && !lit.contains(char::is_whitespace) {
             // a leading `{}` or `{name}` placeholder stands for the manifest dir
             let after_placeholder = lit
                 .strip_prefix('{')
@@ -610,10 +611,16 @@ fn scan_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) -> Vec<Stri
                 after_placeholder.trim_start_matches('/'),
             ] {
                 if let Some(rel) = norm(mdir, l) {
-                    if !rel.is_empty() && repo.exists(&rel) {
+                    if rel.is_empty() {
+                        continue;
+                    }
+                    if repo.exists(&rel) {
                         if let Some(c) = repo.claim_for(Some(rel)) {
                             cg.add(c, "literal");
                         }
+                    } else if l.contains('/') && !l.contains(['{', '}', '$', ':']) {
+                        // a path this change may have deleted: claim it exactly
+                        cg.add(rel, "literal");
                     }
                 }
             }
@@ -860,7 +867,7 @@ fn scan_build_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) {
         let lit = unescape(&lit)
             .replace("cargo:rerun-if-changed=", "")
             .replace("cargo::rerun-if-changed=", "");
-        if !lit.contains('/') && !lit.contains('.') {
+        if lit.is_empty() {
             continue;
         }
         if lit.contains(['{', '}', '$', ' ', '\\'])
@@ -872,7 +879,7 @@ fn scan_build_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) {
         let Some(rel) = norm(mdir, &lit) else {
             continue;
         };
-        if repo.exists(&rel) || lit.contains('/') {
+        if !rel.is_empty() && (repo.exists(&rel) || lit.contains('/')) {
             if let Some(c) = repo.claim_for(Some(rel)) {
                 cg.add(c, "build-rs");
             }
@@ -935,10 +942,22 @@ fn walk_zephyr(
         for f in repo.walk(&rel) {
             let b = basename(&f);
             if b == "CMakeLists.txt" || b.ends_with(".cmake") {
-                if let (Some(re), Ok(src)) = (&var_re, repo.read(&f)) {
+                let Ok(src) = repo.read(&f) else { continue };
+                if let Some(re) = &var_re {
                     for c in re.captures_iter(&src) {
                         if let Some(cl) = repo.claim_for(norm(&mroot, &c[1])) {
                             cg.add(cl, "zephyr");
+                        }
+                    }
+                }
+                // ./x and ../x tokens, relative to this CMake file, that exist:
+                // zephyr_library_sources(../drivers/foo.c) and the like.
+                for c in cmake_rel_re().captures_iter(&src) {
+                    if let Some(p) = norm(dirname(&f), &c[1]) {
+                        if !p.is_empty() && repo.exists(&p) {
+                            if let Some(cl) = repo.claim_for(Some(p)) {
+                                cg.add(cl, "zephyr");
+                            }
                         }
                     }
                 }
@@ -948,28 +967,54 @@ fn walk_zephyr(
     Ok(())
 }
 
+fn cmake_rel_re() -> &'static Regex {
+    static REL: OnceLock<Regex> = OnceLock::new();
+    REL.get_or_init(|| Regex::new(r"(?:^|[\s(])(\.\.?/[A-Za-z0-9_./-]+)").unwrap())
+}
+
 // ── Bazel ──────────────────────────────────────────────────────────────────
 
 /// The literal `srcs` of a BUILD file, as repository paths. A glob, a
 /// variable, a concatenation or an @external label cannot be proven and is
 /// the error `bazel-srcs-not-literal`.
 pub fn bazel_literal_srcs(repo: &Repo, build: &str) -> Result<Vec<String>, GraphError> {
+    let code = bazel_code(repo, build)?;
+    let pkg = dirname(build).to_string();
+    let labels = bazel_attr_labels(&code, build, "srcs", "bazel-srcs-not-literal")?;
+    if let Some(l) = labels.iter().find(|l| l.starts_with('@')) {
+        return Err(GraphError::new(
+            "bazel-srcs-not-literal",
+            format!("{build}: srcs names the external label {l}"),
+        ));
+    }
+    Ok(labels.iter().map(|l| label_path(&pkg, l)).collect())
+}
+
+fn bazel_code(repo: &Repo, build: &str) -> Result<String, GraphError> {
     let text = repo
         .read(build)
         .map_err(|e| GraphError::new("bazel-build-unreadable", format!("{build}: {e}")))?;
-    let code: String = text
+    Ok(text
         .lines()
         .map(strip_hash_comment)
         .collect::<Vec<_>>()
-        .join("\n");
-    let pkg = dirname(build).to_string();
-    let re = Regex::new(r"\bsrcs\s*=\s*").unwrap();
+        .join("\n"))
+}
+
+/// Every label in every literal `<attr> = [...]` list of a BUILD file. Any
+/// other form (glob, variable, select, concatenation) is the error `code`.
+fn bazel_attr_labels(
+    code: &str,
+    build: &str,
+    attr: &str,
+    err: &'static str,
+) -> Result<Vec<String>, GraphError> {
+    let re = Regex::new(&format!(r"\b{attr}\s*=\s*")).unwrap();
     let b = code.as_bytes();
     let mut out = Vec::new();
-    for m in re.find_iter(&code) {
+    for m in re.find_iter(code) {
         let i = m.end();
-        let bad =
-            |why: &str| GraphError::new("bazel-srcs-not-literal", format!("{build}: srcs {why}"));
+        let bad = |why: &str| GraphError::new(err, format!("{build}: {attr} {why}"));
         if i >= b.len() || b[i] != b'[' {
             return Err(bad("is not a literal list"));
         }
@@ -979,35 +1024,86 @@ pub fn bazel_literal_srcs(repo: &Repo, build: &str) -> Result<Vec<String>, Graph
             return Err(bad("is concatenated with a non-literal"));
         }
         let inner = &code[i + 1..end];
-        let lit_re = res().literal.clone();
+        let lit_re = &res().literal;
         let rest = lit_re.replace_all(inner, "");
         if rest.chars().any(|c| !(c.is_whitespace() || c == ',')) {
             return Err(bad("holds a non-literal element"));
         }
-        for c in lit_re.captures_iter(inner) {
-            let label = unescape(&c[1]);
-            if label.starts_with('@') {
-                return Err(bad(&format!("names the external label {label}")));
-            }
-            let path = if let Some(l) = label.strip_prefix("//") {
-                let (p, n) = l.split_once(':').unwrap_or((l, basename(l)));
-                if p.is_empty() {
-                    n.to_string()
-                } else {
-                    format!("{p}/{n}")
-                }
-            } else {
-                let n = label.trim_start_matches(':');
-                if pkg.is_empty() {
-                    n.to_string()
-                } else {
-                    format!("{pkg}/{n}")
-                }
-            };
-            out.push(path);
-        }
+        out.extend(lit_re.captures_iter(inner).map(|c| unescape(&c[1])));
     }
     Ok(out)
+}
+
+/// A file label as a repository path: `//p:n` -> p/n, `:n` or `n` -> pkg/n.
+fn label_path(pkg: &str, label: &str) -> String {
+    let join = |p: &str, n: &str| {
+        if p.is_empty() {
+            n.to_string()
+        } else {
+            format!("{p}/{n}")
+        }
+    };
+    match label.strip_prefix("//") {
+        Some(l) => {
+            let (p, n) = l.split_once(':').unwrap_or((l, basename(l)));
+            join(p, n)
+        }
+        None => join(pkg, label.trim_start_matches(':')),
+    }
+}
+
+/// A Bazel class: literal srcs, hdrs and data of the named BUILD files, and
+/// every in-repository package their `deps` reach, transitively (claimed as
+/// a whole package directory). An @external dep is not a repository input:
+/// MODULE.bazel and its lock select everything.
+fn bazel_walk(
+    repo: &Repo,
+    build: &str,
+    seen: &mut BTreeSet<String>,
+    cg: &mut ClassGraph,
+) -> Result<(), GraphError> {
+    if !seen.insert(build.to_string()) {
+        return Ok(());
+    }
+    cg.add(build.to_string(), "bazel");
+    let pkg = dirname(build).to_string();
+    for p in bazel_literal_srcs(repo, build)? {
+        cg.add(p, "bazel");
+    }
+    let code = bazel_code(repo, build)?;
+    for attr in ["hdrs", "data"] {
+        for l in bazel_attr_labels(&code, build, attr, "bazel-deps-not-literal")? {
+            if !l.starts_with('@') {
+                cg.add(label_path(&pkg, &l), "bazel");
+            }
+        }
+    }
+    for l in bazel_attr_labels(&code, build, "deps", "bazel-deps-not-literal")? {
+        if l.starts_with('@') || !l.starts_with("//") {
+            continue; // external, or a target in this same package
+        }
+        let dep_pkg = l[2..].split(':').next().unwrap_or("").to_string();
+        if !dep_pkg.is_empty() {
+            cg.add(format!("{dep_pkg}/"), "bazel");
+        }
+        let dep_build = ["BUILD.bazel", "BUILD"]
+            .iter()
+            .map(|f| {
+                if dep_pkg.is_empty() {
+                    f.to_string()
+                } else {
+                    format!("{dep_pkg}/{f}")
+                }
+            })
+            .find(|f| repo.is_file(f));
+        match dep_build {
+            Some(f) => bazel_walk(repo, &f, seen, cg)?,
+            None => cg.unresolved.push(format!(
+                "{build}: dep {l} has no BUILD file in the repository"
+            )),
+        }
+    }
+    Ok(())
 }
 
 fn strip_hash_comment(l: &str) -> &str {

@@ -173,14 +173,16 @@ pub fn classify(
             });
             continue;
         }
-        if docs_candidate(p) && !named.contains(basename(p)) {
-            continue; // docs only
-        }
         let hits: Vec<&String> = g
             .iter()
             .filter(|(_, cg)| cg.claims_path(p))
             .map(|(c, _)| c)
             .collect();
+        // Docs only if no class claims it: a .md inside a claimed directory can
+        // be read through include_dir!, a directory walk or a built name.
+        if hits.is_empty() && docs_candidate(p) && !named.contains(basename(p)) {
+            continue; // docs only
+        }
         for c in &hits {
             v.classes.insert((*c).clone(), true);
         }
