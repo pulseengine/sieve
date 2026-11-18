@@ -987,7 +987,17 @@ pub fn bazel_literal_srcs(repo: &Repo, build: &str) -> Result<Vec<String>, Graph
             format!("{build}: srcs names the external label {l}"),
         ));
     }
-    Ok(labels.iter().map(|l| label_path(&pkg, l)).collect())
+    labels
+        .iter()
+        .map(|l| {
+            label_path(&pkg, l).ok_or_else(|| {
+                GraphError::new(
+                    "bazel-label-leaves-repo",
+                    format!("{build}: srcs label {l} leaves the repository"),
+                )
+            })
+        })
+        .collect()
 }
 
 fn bazel_code(repo: &Repo, build: &str) -> Result<String, GraphError> {
@@ -1035,21 +1045,14 @@ fn bazel_attr_labels(
 }
 
 /// A file label as a repository path: `//p:n` -> p/n, `:n` or `n` -> pkg/n.
-fn label_path(pkg: &str, label: &str) -> String {
-    let join = |p: &str, n: &str| {
-        if p.is_empty() {
-            n.to_string()
-        } else {
-            format!("{p}/{n}")
-        }
+fn label_path(pkg: &str, label: &str) -> Option<String> {
+    let (p, n) = match label.strip_prefix("//") {
+        Some(l) => l.split_once(':').unwrap_or((l, basename(l))),
+        None => (pkg, label.trim_start_matches(':')),
     };
-    match label.strip_prefix("//") {
-        Some(l) => {
-            let (p, n) = l.split_once(':').unwrap_or((l, basename(l)));
-            join(p, n)
-        }
-        None => join(pkg, label.trim_start_matches(':')),
-    }
+    // norm refuses a label that climbs out of the repository (`//../x:y`).
+    let joined = norm(p, n)?;
+    (!joined.is_empty()).then_some(joined)
 }
 
 /// A Bazel class: literal srcs, hdrs and data of the named BUILD files, and
@@ -1074,7 +1077,12 @@ fn bazel_walk(
     for attr in ["hdrs", "data"] {
         for l in bazel_attr_labels(&code, build, attr, "bazel-deps-not-literal")? {
             if !l.starts_with('@') {
-                cg.add(label_path(&pkg, &l), "bazel");
+                match label_path(&pkg, &l) {
+                    Some(p) => cg.add(p, "bazel"),
+                    None => cg
+                        .unresolved
+                        .push(format!("{build}: {attr} label {l} leaves the repository")),
+                }
             }
         }
     }
@@ -1082,7 +1090,11 @@ fn bazel_walk(
         if l.starts_with('@') || !l.starts_with("//") {
             continue; // external, or a target in this same package
         }
-        let dep_pkg = l[2..].split(':').next().unwrap_or("").to_string();
+        let Some(dep_pkg) = norm("", l[2..].split(':').next().unwrap_or("")) else {
+            cg.unresolved
+                .push(format!("{build}: dep {l} leaves the repository"));
+            continue;
+        };
         if !dep_pkg.is_empty() {
             cg.add(format!("{dep_pkg}/"), "bazel");
         }
@@ -1227,6 +1239,32 @@ mod tests {
         let mut cg = ClassGraph::default();
         scan_rs(&repo, "c/src/lib.rs", "c", &mut cg);
         assert_eq!(cg.unresolved.len(), 1, "{:?}", cg.unresolved);
+    }
+
+    #[test]
+    fn a_bazel_label_leaving_the_repository_is_unresolved_and_not_read() {
+        let repo = tree(
+            "bazel-escape",
+            &[("app/BUILD.bazel", "cc_binary(name=\"a\", srcs=[\"a.cc\"], deps=[\"//../outside:x\"], data=[\"//../../etc:passwd\"])\n")],
+        );
+        let mut cg = ClassGraph::default();
+        let mut seen = BTreeSet::new();
+        bazel_walk(&repo, "app/BUILD.bazel", &mut seen, &mut cg).unwrap();
+        assert_eq!(cg.unresolved.len(), 2, "{:?}", cg.unresolved);
+        assert!(
+            cg.claims
+                .keys()
+                .all(|c| !c.contains("..") && !c.starts_with('/')),
+            "{:?}",
+            cg.claims
+        );
+        assert_eq!(
+            seen.len(),
+            1,
+            "a BUILD file outside the repository was read: {seen:?}"
+        );
+        assert_eq!(label_path("", "//../x:y"), None);
+        assert_eq!(label_path("p", ":n").as_deref(), Some("p/n"));
     }
 
     #[test]
