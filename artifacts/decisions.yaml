@@ -1,0 +1,112 @@
+artifacts:
+  - id: DD-001
+    type: design-decision
+    title: One Rust binary crate, small dependency set, WASI-compatible core
+    status: implemented
+    release: v0.1.0
+    fields:
+      decision: >
+        A single crate `sieve` with a pure classification core (no I/O beyond
+        a file-tree trait) and a thin CLI shell that does git, cargo and file
+        access. Dependencies: toml, serde_json, regex, aho-corasick (the docs
+        basename index) and sha2 (inputs_hash). Arguments are parsed by hand;
+        no clap.
+      rationale: >
+        The core can later compile to a WASI component unchanged; the small
+        dependency set keeps the supply-chain surface of a tool that runs in
+        eight repositories' CI small.
+      alternatives: >
+        Ship rivet's single-file prototype as is (no crates): rejected, it
+        hand-parses TOML, which is the failure surface behind the crash case.
+      review: author-verified only (tests in CI); no independent review yet
+    links:
+      - {type: satisfies, target: REQ-008}
+      - {type: satisfies, target: REQ-017}
+
+  - id: DD-002
+    type: design-decision
+    title: Walk Cargo manifests directly; use cargo metadata only as a cross-check
+    status: implemented
+    release: v0.1.0
+    fields:
+      decision: >
+        classify and graph parse Cargo.toml themselves (workspace members,
+        path dependencies of every kind, cargo target autodiscovery, explicit
+        targets, nested workspace roots). check-graph runs
+        `cargo metadata --no-deps --offline` and requires every package and
+        target it reports to be claimed by the walk.
+      rationale: >
+        Same split as the gale reference. Classification then needs neither
+        a toolchain nor network nor .git (plant's request), and the
+        cross-check catches walk gaps independently.
+      review: author-verified only (tests in CI); no independent review yet
+    links:
+      - {type: satisfies, target: REQ-006}
+      - {type: satisfies, target: REQ-010}
+      - {type: satisfies, target: REQ-009}
+
+  - id: DD-003
+    type: design-decision
+    title: Fail open by construction at the top of main
+    status: implemented
+    release: v0.1.0
+    fields:
+      decision: >
+        Every classify path returns a Verdict or an internal error; main maps
+        an error and a caught panic (catch_unwind plus a panic hook) to
+        run_all with an "internal:" reason, a `::warning::` line and exit 0.
+        Only argument and config validation exit 2. A class whose inputs did
+        not resolve is a tri-state Unresolved that serialises as true.
+      rationale: >
+        One choke point is easier to test and to review than fail-open logic
+        spread over every caller; the corpus forced-crash case pins it.
+      review: author-verified only (tests in CI); no independent review yet
+    links:
+      - {type: satisfies, target: REQ-002}
+      - {type: satisfies, target: REQ-003}
+      - {type: satisfies, target: REQ-007}
+
+  - id: DD-004
+    type: design-decision
+    title: Vendor the gale corpus and run it as a Rust integration test
+    status: implemented
+    release: v0.1.0
+    fields:
+      decision: >
+        Copy tools/ci/classifier-corpus/ from gale 4050000f into tests/corpus/
+        unchanged with its provenance recorded; a test harness materialises
+        each case's tree in a temp dir (git cases make the two commits),
+        translates spec.json gates into a sieve.toml, runs the built binary
+        and compares the selected set exactly (both directions) plus warning,
+        check and error expectations, in json and github-output format, and
+        runs every paths-mode case again with .git removed. One test reports
+        every case by name and fails listing all failing cases.
+      rationale: >
+        The corpus is the spec; running the shipped binary end to end tests
+        the CLI and the config translation, not only the library.
+      review: author-verified only (tests in CI); no independent review yet
+    links:
+      - {type: satisfies, target: REQ-012}
+
+  - id: DD-005
+    type: design-decision
+    title: sieve.toml mirrors the corpus gates shape
+    status: implemented
+    release: v0.1.0
+    fields:
+      decision: >
+        [class.<name>] with cargo, cargo_glob, zephyr, hand (hand entries are
+        the only hand-maintained inputs and are labelled so in graph output)
+        and bazel_build; [run_all] files/prefixes/suffixes/basenames;
+        [inert] files/prefixes; [docs] rule toggle. Defaults for run_all
+        ship in the binary and a config can add to them but not remove the
+        safety-critical ones (.github/, Cargo.lock, toolchain and build files,
+        sieve.toml itself).
+      rationale: >
+        The corpus spec already names this shape and gale, relay, rivet and
+        loom were exercised against it; non-removable defaults stop a pull
+        request from classifying its own config change away.
+      review: author-verified only (tests in CI); no independent review yet
+    links:
+      - {type: satisfies, target: REQ-005}
+      - {type: satisfies, target: REQ-004}

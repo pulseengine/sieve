@@ -1,0 +1,92 @@
+artifacts:
+  - id: SL-001
+    type: sec-loss
+    title: Compromise of a self-hosted runner or its secrets
+    status: draft
+    description: >
+      Untrusted code executes on a fleet self-hosted runner, exposing the
+      host, its caches and any credentials it can reach.
+    fields:
+      cia-impact: [confidentiality, integrity, availability]
+      stakeholders: [owner]
+
+  - id: SL-002
+    type: sec-loss
+    title: Loss of integrity of the CI verdicts the fleet relies on
+    status: draft
+    description: >
+      An adversary makes sieve report "nothing to run" for a change that
+      should be verified, so malicious or defective code merges with green
+      checks in up to eight consumer repositories.
+    fields:
+      cia-impact: [integrity]
+      stakeholders: [owner, consumer-repo-maintainers, downstream-users]
+
+  - id: SH-001
+    type: sec-hazard
+    title: Fork pull request code reaches a self-hosted runner
+    status: draft
+    description: >
+      A job in sieve's own CI, or a consumer job wiring sieve, runs a fork's
+      code on self-hosted hardware (missing fork guard, or a self-hosted job
+      in a pull_request_target workflow).
+    fields:
+      cia-impact: [confidentiality, integrity, availability]
+      severity: critical
+    links:
+      - {type: leads-to-sec-loss, target: SL-001}
+
+  - id: SH-002
+    type: sec-hazard
+    title: A tampered or unpinned sieve binary is executed by consumer CI
+    status: draft
+    description: >
+      Consumers fetch sieve unpinned, or the release assets are replaced, so
+      a binary that under-selects runs in every consumer.
+    fields:
+      cia-impact: [integrity]
+      severity: critical
+    links:
+      - {type: leads-to-sec-loss, target: SL-002}
+
+  - id: SH-003
+    type: sec-hazard
+    title: A pull request steers its own classification
+    status: draft
+    description: >
+      The pull request edits sieve.toml, the inert list, the Bazel snapshot or
+      the workflow env (EVENT_NAME, BASE_SHA, GATE_PROBE_FILES) in the same
+      change, so its heavy jobs are classified away.
+    fields:
+      cia-impact: [integrity]
+      severity: high
+    links:
+      - {type: leads-to-sec-loss, target: SL-002}
+
+  - id: SSC-001
+    type: sec-constraint
+    title: Self-hosted jobs must use the fail-closed fork guard and never run under pull_request_target
+    status: draft
+    links:
+      - {type: prevents-sec-hazard, target: SH-001}
+
+  - id: SSC-002
+    type: sec-constraint
+    title: sieve must be consumed only as a signed release through a varve pin
+    status: draft
+    description: >
+      Tags signed, assets cosign-signed, the layer entry verified by varve
+      against the realm trust root.
+    links:
+      - {type: prevents-sec-hazard, target: SH-002}
+
+  - id: SSC-003
+    type: sec-constraint
+    title: Changes to sieve's own config and the workflow wiring must select everything
+    status: draft
+    description: >
+      sieve.toml, snapshots and fingerprints, .github/** and toolchain pins
+      are run-all paths; gate (b) refuses env overrides of the classifier's
+      inputs.
+    links:
+      - {type: prevents-sec-hazard, target: SH-003}

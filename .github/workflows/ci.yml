@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+# `shell: bash` runs with -eo pipefail, so a piped step reports its own exit.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+  # The rivet release CI validates with; matches the varve.toml layer (2026.11.23).
+  RIVET_VERSION: v0.42.2
+  # sha256 of rivet-v0.42.2-x86_64-unknown-linux-gnu.tar.gz, recorded on
+  # 2026-11-18 from the release's SHA256SUMS.txt after `cosign verify-blob`
+  # of that file against the rivet release workflow identity. Pinned here so a
+  # replaced release asset fails the job instead of being trusted with its own sums.
+  RIVET_SHA256: 79dddaf2c084a6be43865fc061b72131ba81b90e8edb2a3bd8825d1b653d684d
+
+jobs:
+  test:
+    name: Test
+    # Fork PRs never reach self-hosted runners (fail-closed same-repo guard).
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable, 2026-11-15
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      # Includes the 74-case classifier corpus against the built binary.
+      - name: test
+        run: cargo test --all-targets --no-fail-fast -- --nocapture
+
+  rivet:
+    name: rivet validate
+    # Fork PRs never reach self-hosted runners (fail-closed same-repo guard).
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: fetch pinned rivet release
+        run: |
+          d="$RUNNER_TEMP/rivet"; mkdir -p "$d"; cd "$d"
+          asset="rivet-$RIVET_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/pulseengine/rivet/releases/download/$RIVET_VERSION"
+          curl -fsSL -o "$asset" "$base/$asset"
+          act=$(sha256sum "$asset" | awk '{print $1}')
+          test "$act" = "$RIVET_SHA256" || { echo "checksum mismatch for $asset: $act"; exit 1; }
+          tar xzf "$asset"
+          echo "$d/$(dirname "$(find . -name rivet -type f | head -1)")" >> "$GITHUB_PATH"
+      - name: rivet validate
+        run: |
+          rivet --version
+          rivet validate
+      - name: test markers
+        run: rivet coverage --tests

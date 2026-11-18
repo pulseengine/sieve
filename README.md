@@ -1,2 +1,109 @@
 # sieve
-Shared CI path classifier: decides per PR which heavy CI jobs a change touches; unsure means everything runs (work in progress)
+
+Shared CI path classifier. Per pull request it decides which heavy CI jobs a
+change touches. When it is unsure, everything runs (fail open). Each class's
+inputs are derived from the build graph (Cargo manifests and sources, Zephyr
+modules, Bazel), not hand-listed.
+
+The independent false-skip controls against sieve live in
+[plant](https://github.com/pulseengine/plant), by design: the decider and its
+check live apart.
+
+## Use
+
+```sh
+sieve classify --config sieve.toml --event pull_request --base "$BASE_SHA" --format github-output
+sieve classify --config sieve.toml --paths-file changed.txt          # no git call
+sieve graph --config sieve.toml                                      # sieve.graph.v1
+sieve check-graph --config sieve.toml                                # controls on the real tree
+sieve --version                                                      # names the JSON schemas
+```
+
+Wire a heavy job only through this `if:` form, so that a crashed, cancelled
+or silent classifier still runs the job:
+
+```yaml
+if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.proofs != 'false') }}
+```
+
+Never put a workflow-level `paths:` filter on a workflow that hosts a required
+check.
+
+## What runs everything
+
+- any event other than `pull_request`; no base sha; a failed or empty diff;
+- `.github/**`, `.cargo/**` at any level, `Cargo.lock`, `rust-toolchain*`,
+  `BUILD`, `*.bzl`, `MODULE.bazel*`, `WORKSPACE*`, `.bazelrc`, `varve.toml`,
+  `varve-realms.toml`, `.gitmodules`, `flake.nix`, `flake.lock`, `lean-toolchain`,
+  and the sieve config itself (built in, not
+  removable), plus the config's `[run_all]` additions;
+- a path no class claims, unless the config's `[inert]` list or the docs rule
+  covers it (a `.md` or `LICENSE*` file that no non-markdown file names);
+- any internal failure: the reason starts with `internal:` and a GitHub
+  `::warning::` is printed.
+
+Without git (`--paths`, `--paths-file`, `GATE_PROBE_FILES`, `graph`) sieve
+walks the tree instead of `git ls-files`, so the docs rule also reads
+untracked and gitignored files (a `__pycache__/*.pyc`, a build output). That
+can only select more, never less, but on a dev machine it can over-select
+where CI would not.
+
+A path with a control character, `..`, `.` or an empty component is malformed
+and selects everything; log lines escape `%`, CR and LF so a path cannot forge
+a workflow command.
+
+Symlinks at or inside a claimed path are followed: a target inside the
+repository is claimed too, a target outside makes the class always run.
+
+A class with an input sieve cannot resolve (an `include!` built from an
+unknown env var, a non-literal `generate!` path, a stale Bazel snapshot)
+always runs.
+
+## sieve.toml
+
+```toml
+schema = "sieve.config.v1"
+
+[run_all]
+prefixes = ["tools/"]            # added to the built-in list
+
+[inert]                          # HAND-MAINTAINED: read by no heavy job
+files = ["rivet.yaml"]
+prefixes = ["artifacts/"]
+
+[class.proofs]
+cargo = ["Cargo.toml"]           # roots: path deps, targets, #[path], include!, ... followed
+cargo_glob = ["drivers/*-thin/Cargo.toml"]
+zephyr = ["zephyr/module.yml"]
+bazel_build = ["proofs/BUILD.bazel"]   # literal srcs only
+hand = ["proofs/"]               # HAND-MAINTAINED; `sieve graph` labels these "hand"
+true_inputs = ["proofs/sem.v"]   # check-graph: each must select this class via the graph
+```
+
+## Verification
+
+`tests/corpus/` is the language-neutral classifier corpus from gale
+(`reference/l7-ci-classifier` at 4050000f, 74 cases). `cargo test` runs every
+case against the built binary and requires the exact expected set in both
+directions. Safety analysis, requirements and design decisions are in
+`artifacts/` (rivet).
+
+
+## Workflow gates
+
+`sieve check-workflows --config sieve.toml` checks a consumer's workflows
+against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
+3 refused):
+
+- (a) every workflow hosting a required context runs on `pull_request`
+  (no `paths:`/`paths-ignore:` key, even empty; no branch or `types:`
+  restriction) and on `merge_group`;
+- (b) a required job is skipped only through the classifier: its `if:` is
+  absent or exactly the form above, wired to a real `sieve classify` step
+  with no env override, no step-level `if:` on outputs, no unobserved
+  `continue-on-error`, no skip inherited through `needs:`. The
+  `[workflows.job_outputs]` map (job to classes) is HAND-MAINTAINED;
+- (c) the classifier selects everything on push, merge_group, no base, a bad
+  base and an empty diff.
+
+License: Apache-2.0.
