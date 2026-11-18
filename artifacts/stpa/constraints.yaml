@@ -1,0 +1,68 @@
+artifacts:
+  - id: SC-001
+    type: system-constraint
+    title: sieve must select a class whenever the change set contains any input of that class
+    status: draft
+    description: >
+      Inversion of H-001. Deleted, added, modified and renamed files (a rename
+      is a delete plus an add) all count as touching their class.
+    links:
+      - {type: prevents, target: H-001}
+
+  - id: SC-002
+    type: system-constraint
+    title: Every failure mode of sieve must end in run_all, never in "select nothing"
+    status: draft
+    description: >
+      Inversion of H-002. Internal errors yield run_all true with an
+      "internal:" reason; the consumer if: form treats a missing or empty
+      output as run.
+    links:
+      - {type: prevents, target: H-002}
+
+  - id: SC-003
+    type: system-constraint
+    title: Inputs sieve cannot resolve must make their class always run
+    status: draft
+    description: >
+      Inversion of H-003. An unresolvable include, .incbin, unparsable
+      generate! path, Bazel glob or variable, or a stale query snapshot marks
+      the class unresolved; a path no class claims and no inert rule covers
+      sets run_all.
+    links:
+      - {type: prevents, target: H-003}
+
+  - id: SC-004
+    type: system-constraint
+    title: "Consumer workflows must only consume sieve through the gated if: form"
+    status: draft
+    description: >
+      Inversion of H-004. Gates (a)-(c) hold in every consumer: no
+      workflow-level paths on required workflows, the exact
+      `!cancelled() && (needs.C.result != 'success' || needs.C.outputs.o != 'false')`
+      form, and the real classifier returns all-true on non-PR events and
+      degenerate diffs.
+    links:
+      - {type: prevents, target: H-004}
+
+  - id: SC-005
+    type: system-constraint
+    title: Any narrowing of selection must be shown by an equivalence run and reviewed
+    status: draft
+    description: >
+      Inversion of H-005. Switch-over and upgrades run old and new classifiers
+      over each first-parent commit diff of the consumer's main (400 commits);
+      every difference must be an intended narrowing. The false-skip controls
+      live in plant, independent of sieve's own graph.
+    links:
+      - {type: prevents, target: H-005}
+
+  - id: SC-006
+    type: system-constraint
+    title: sieve must keep run_all rare on ordinary pull requests
+    status: draft
+    description: >
+      Inversion of H-006, subordinate to the selection and fail-open constraints: precision is improved
+      by better graph inputs, never by narrowing fail-open rules.
+    links:
+      - {type: prevents, target: H-006}

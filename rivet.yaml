@@ -1,0 +1,12 @@
+project:
+  name: sieve
+  version: "0.1.0"
+  schemas:
+    - common
+    - dev
+    - stpa
+    - stpa-sec
+
+sources:
+  - path: artifacts
+    format: generic-yaml

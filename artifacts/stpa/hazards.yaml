@@ -1,0 +1,84 @@
+artifacts:
+  - id: H-001
+    type: hazard
+    title: A heavy job is skipped although the change touched its inputs (false skip)
+    status: draft
+    description: >
+      The main hazard. sieve reports a class as false for a change set that
+      contains a file the class's jobs read, so the job is skipped.
+    fields:
+      severity: critical
+    links:
+      - {type: leads-to-loss, target: L-001}
+      - {type: leads-to-loss, target: L-002}
+
+  - id: H-002
+    type: hazard
+    title: A classifier crash, timeout or empty output is read as "nothing to run"
+    status: draft
+    description: >
+      sieve panics, times out, cannot parse a manifest, or emits no output,
+      and the consuming workflow treats the missing or empty verdict as false.
+    fields:
+      severity: critical
+    links:
+      - {type: leads-to-loss, target: L-001}
+      - {type: leads-to-loss, target: L-002}
+
+  - id: H-003
+    type: hazard
+    title: The build-graph input model omits a file a job reads
+    status: draft
+    description: >
+      The class input set derived from cargo metadata, source scans, Bazel or
+      the Zephyr module misses an edge (include!, #[path], cfg_attr path,
+      wit_bindgen path, build.rs path, .incbin, Bazel glob, stale query
+      snapshot, a runtime-read test file), so a change to that file is
+      classified as touching nothing.
+    fields:
+      severity: critical
+    links:
+      - {type: leads-to-loss, target: L-001}
+      - {type: leads-to-loss, target: L-002}
+
+  - id: H-004
+    type: hazard
+    title: "Consumer workflow wiring turns a skip or a missing verdict into a pass"
+    status: draft
+    description: >
+      A workflow-level paths filter hides a required context, a job's if:
+      tests the output as == 'true', a step-level if or continue-on-error
+      swallows the job, or a skip is inherited through needs:. The classifier
+      may be right and the job still does not run, or a skip counts as green.
+    fields:
+      severity: critical
+    links:
+      - {type: leads-to-loss, target: L-001}
+      - {type: leads-to-loss, target: L-002}
+      - {type: leads-to-loss, target: L-003}
+
+  - id: H-005
+    type: hazard
+    title: A change to classifier semantics silently narrows selection
+    status: draft
+    description: >
+      A new sieve release or a consumer's sieve.toml edit selects fewer
+      classes than before for the same diff, without anyone having reviewed
+      the narrowing.
+    fields:
+      severity: critical
+    links:
+      - {type: leads-to-loss, target: L-001}
+
+  - id: H-006
+    type: hazard
+    title: sieve selects everything on most pull requests
+    status: draft
+    description: >
+      Over-selection (spurious unknown paths, overly broad run-all paths,
+      unresolved classes) makes the classifier ineffective. Safe, but it
+      erodes the capacity sieve exists to save and invites ad-hoc bypasses.
+    fields:
+      severity: marginal
+    links:
+      - {type: leads-to-loss, target: L-004}

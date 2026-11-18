@@ -1,0 +1,45 @@
+artifacts:
+  - id: L-001
+    type: loss
+    title: A defect reaches main or a release that a skipped heavy CI job would have caught
+    status: draft
+    description: >
+      A pull request merges while one of its heavy jobs (proofs, renode,
+      coverage, cross-arch, mutation) did not run, and that job would have
+      failed. The defect lands in a consumer's main branch or release.
+    fields:
+      stakeholders: [consumer-repo-maintainers, downstream-users]
+
+  - id: L-002
+    type: loss
+    title: CI and release evidence claims verification that did not happen
+    status: draft
+    description: >
+      A green required check, a compliance report or a release V-model gate
+      cites a job as passed when the job was skipped. The evidence chain the
+      fleet publishes is then false.
+    fields:
+      stakeholders: [owner, assessors, downstream-users]
+
+  - id: L-003
+    type: loss
+    title: Merges blocked because a required check never reports
+    status: draft
+    description: >
+      A required context is never produced (workflow filtered out, classifier
+      job errors without a verdict), so pull requests stall or someone is
+      tempted to bypass the gate.
+    fields:
+      stakeholders: [consumer-repo-maintainers, owner]
+
+  - id: L-004
+    type: loss
+    title: CI capacity wasted on jobs the change cannot affect
+    status: draft
+    description: >
+      Heavy jobs run on changes that cannot touch their inputs, consuming
+      self-hosted runner time and delaying the queue. This is the loss sieve
+      exists to reduce; it ranks below missed defects, false evidence and blocked merges, which is why sieve
+      fails open.
+    fields:
+      stakeholders: [owner, consumer-repo-maintainers]

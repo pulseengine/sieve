@@ -1,0 +1,238 @@
+# Top-level requirements for sieve. Draft until reviewed by the owner.
+# Sources: the gale handover package (design summary, corpus spec), the
+# CLI/JSON interface drafted with plant, and the STPA seed in artifacts/stpa*.
+artifacts:
+  - id: REQ-001
+    type: requirement
+    title: Select every class whose input set intersects the change set
+    status: draft
+    description: >
+      Additions, modifications and deletions all count; a rename counts as a
+      delete of the old path plus an add of the new one.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-001}
+
+  - id: REQ-002
+    type: requirement
+    title: Fail open on non-pull_request events and degenerate diffs
+    status: draft
+    description: >
+      push, merge_group, schedule, workflow_dispatch and any other event that
+      is not pull_request; a missing base sha; a failed diff; an empty diff:
+      each yields run_all true with a reason naming the cause.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-002}
+
+  - id: REQ-003
+    type: requirement
+    title: Turn every internal failure into run_all with an "internal:" reason
+    status: draft
+    description: >
+      A panic, an unparseable manifest, a failed cargo metadata call or a
+      timeout yields run_all true, a reason starting with "internal:" and a
+      GitHub `::warning::` line, exit code 0. Usage errors and an invalid
+      config exit 2 so the classifier job goes red, which the consumer if:
+      form also treats as run. No exit path selects nothing.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-002}
+
+  - id: REQ-004
+    type: requirement
+    title: Set run_all for any path no class claims and no inert rule covers
+    status: draft
+    description: >
+      Unknown and unclaimed paths (a new top-level directory, say) are listed
+      in unknown_paths and set run_all. Inert rules are explicit and
+      reviewed in the consumer's config.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-003}
+
+  - id: REQ-005
+    type: requirement
+    title: Treat CI, toolchain, build-system and sieve config paths as run-all paths
+    status: draft
+    description: >
+      .github/**, the consumer's tools/** config, .cargo/** at any level,
+      Cargo.lock, rust-toolchain*, BUILD, *.bzl, MODULE.bazel*, .bazelrc,
+      .bazelversion, varve.toml, sieve.toml and committed graph snapshots.
+      A run-all reason names the path, never with the "internal:" prefix.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-003}
+      - {type: satisfies, target: SSC-003}
+
+  - id: REQ-006
+    type: requirement
+    title: Derive class inputs from the build graph
+    status: draft
+    description: >
+      cargo metadata --no-deps --offline per tracked manifest (nested
+      workspace roots included); transitive path dependencies of every kind;
+      every target's sources; scans for #[path], cfg_attr path,
+      include!/include_str!/include_bytes!/include_dir!, wit_bindgen
+      generate! paths (nested braces), build.rs path literals and .join("..")
+      chains, concat!(env!("CARGO_MANIFEST_DIR"), ...), and
+      [package.metadata.component] paths; Bazel literal srcs or a committed
+      query snapshot with a fingerprint; the Zephyr module and the paths its
+      CMake reads. Hand-listed entries are marked as hand.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-001}
+      - {type: constraint-satisfies, target: SC-006}
+
+  - id: REQ-007
+    type: requirement
+    title: Mark a class unresolved, and always run it, when an input cannot be resolved
+    status: draft
+    description: >
+      An unresolvable include, .incbin, an unparsable generate! path, a Bazel
+      glob, variable or @external label, or a snapshot whose fingerprint no
+      longer matches the BUILD/.bzl/MODULE files.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-003}
+
+  - id: REQ-008
+    type: requirement
+    title: Provide the classify CLI and the sieve.classify.v1 JSON contract
+    status: draft
+    description: >
+      `sieve classify --config sieve.toml (--base S --head S | --paths-file F
+      | --paths P...) [--event E] --format json|github-output`, honouring
+      GATE_PROBE_FILES. JSON: schema, run_all, reason, classes, unknown_paths,
+      inputs_hash. github-output writes one line per class plus run_all.
+    fields: {priority: must, category: interface}
+    links:
+      - {type: constraint-satisfies, target: SC-002}
+
+  - id: REQ-009
+    type: requirement
+    title: Provide `sieve graph` (sieve.graph.v1) and `sieve check-graph`
+    status: draft
+    description: >
+      graph prints each class's files with the source of each edge
+      (cargo, path-attr, include, wit, build-rs, bazel, zephyr, hand), the
+      run-all paths and the inert paths. check-graph runs the graph controls
+      and exits 0 pass, 1 control failed, 2 usage, 3 refused.
+    fields: {priority: must, category: interface}
+    links:
+      - {type: constraint-satisfies, target: SC-001}
+      - {type: constraint-satisfies, target: SC-003}
+
+  - id: REQ-010
+    type: requirement
+    title: Classify from a paths file and build the graph without a .git directory
+    status: draft
+    description: >
+      plant request. With --paths-file, and for graph, sieve makes no git
+      calls: manifests come from a file walk, cargo metadata runs with
+      --offline --no-deps.
+    fields: {priority: must, category: interface}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-011
+    type: requirement
+    title: Print the output schema versions in `sieve --version`
+    status: draft
+    description: >
+      plant request. --version names the crate version and every JSON schema
+      version it emits (sieve.classify.v1, sieve.graph.v1).
+    fields: {priority: must, category: interface}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-012
+    type: requirement
+    title: Pass every case of the language-neutral classifier corpus in both directions
+    status: draft
+    description: >
+      tools/ci/classifier-corpus/ (74 cases from gale, relay, rivet, loom):
+      each expected-true class is selected and each expected-false class is
+      not; expected run_all and expected errors match. Vendored into this
+      repository and run in CI.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-001}
+      - {type: constraint-satisfies, target: SC-006}
+
+  - id: REQ-013
+    type: requirement
+    title: Gate every consumer switch-over and every release by an old-vs-new equivalence run
+    status: draft
+    description: >
+      Run the previous and the new classifier in GATE_PROBE_FILES mode over
+      each first-parent commit diff of the consumer's main (400 commits).
+      Every difference is listed and must be an intended narrowing.
+    fields: {priority: must, category: constraint}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-014
+    type: requirement
+    title: Provide the consumer workflow gates (a)-(c) as a sieve subcommand
+    status: draft
+    description: >
+      Port of gale's tools/check-required-contexts.py (no new Python): (a) no
+      workflow-level paths on workflows hosting a required context; (b) a
+      required job's if: is absent or exactly the gated form wired to a real
+      classifier output, with the hardening (no step-level output reads, no
+      continue-on-error, no skip inherited through needs:, exact classifier
+      run/env, no env override of EVENT_NAME/BASE_SHA/GATE_PROBE_FILES); (c)
+      the real classifier returns all-true on push, merge_group, no base, a
+      bad diff and an empty diff.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-004}
+      - {type: satisfies, target: SSC-003}
+
+  - id: REQ-015
+    type: requirement
+    title: Keep the false-skip oracle independent of sieve
+    status: draft
+    description: >
+      sieve's own tests do not count as the false-skip control. plant hosts
+      the controls, with an oracle built from rustc dep-info and hand-named
+      inputs, not from `sieve graph`.
+    fields: {priority: must, category: constraint}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-016
+    type: requirement
+    title: Run self-hosted CI jobs only behind the fail-closed fork guard
+    status: draft
+    description: >
+      runs-on selects self-hosted only when the event is not pull_request or
+      the head repository is this repository; otherwise ubuntu-latest. No
+      self-hosted job in a pull_request_target workflow.
+    fields: {priority: must, category: constraint}
+    links:
+      - {type: satisfies, target: SSC-001}
+
+  - id: REQ-017
+    type: requirement
+    title: Ship sieve as signed tagged releases consumed through a varve pin
+    status: draft
+    description: >
+      Signed tags, cosign-signed release assets and checksums as in plant's
+      pipeline; a [[tool]] entry in the pulseengine varve realm.
+    fields: {priority: must, category: constraint}
+    links:
+      - {type: satisfies, target: SSC-002}
+
+  - id: REQ-018
+    type: requirement
+    title: Keep classification fast on the largest consumer
+    status: draft
+    description: >
+      Expensive scans (the docs git grep took 50 s over 1,200 .md files in
+      the reference) are cached or bounded, so classification does not
+      become the slow job and nobody is tempted to bypass it.
+    fields: {priority: should, category: non-functional}
+    links:
+      - {type: constraint-satisfies, target: SC-006}
