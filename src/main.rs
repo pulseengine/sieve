@@ -104,7 +104,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 fn version() -> String {
     format!(
-        "sieve {} (schemas: {CLASSIFY_SCHEMA}, {GRAPH_SCHEMA}, {CHECK_SCHEMA}, {CONFIG_SCHEMA})",
+        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {CONFIG_SCHEMA}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -130,6 +130,9 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         _ => {}
+    }
+    if !["classify", "graph", "check-graph"].contains(&argv[0].as_str()) {
+        return usage_error(&format!("unknown command `{}`", argv[0]));
     }
     let a = match parse_args(&argv) {
         Ok(a) => a,
@@ -261,8 +264,16 @@ fn cmd_classify(a: &Args, root: PathBuf, cfg: &Config) -> ExitCode {
     emit(&v, format)
 }
 
+/// Escape a string for a log line, so a path cannot start or end a GitHub
+/// workflow command (the runner's own escaping for command data).
+fn esc(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
 fn emit(v: &Verdict, format: &str) -> ExitCode {
-    let reason = v.reason.clone().unwrap_or_default();
+    let reason = esc(v.reason.as_deref().unwrap_or_default());
     eprintln!(
         "sieve: {}",
         if v.run_all {
@@ -272,10 +283,10 @@ fn emit(v: &Verdict, format: &str) -> ExitCode {
         }
     );
     for n in &v.notes {
-        eprintln!("  -> {n}");
+        eprintln!("  -> {}", esc(n));
     }
     for u in &v.unknown_paths {
-        eprintln!("  unknown: {u}");
+        eprintln!("  unknown: {}", esc(u));
     }
     let warning = v.warn.then(|| {
         format!(

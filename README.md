@@ -41,6 +41,19 @@ check.
 - any internal failure: the reason starts with `internal:` and a GitHub
   `::warning::` is printed.
 
+Without git (`--paths`, `--paths-file`, `GATE_PROBE_FILES`, `graph`) sieve
+walks the tree instead of `git ls-files`, so the docs rule also reads
+untracked and gitignored files (a `__pycache__/*.pyc`, a build output). That
+can only select more, never less, but on a dev machine it can over-select
+where CI would not.
+
+A path with a control character, `..`, `.` or an empty component is malformed
+and selects everything; log lines escape `%`, CR and LF so a path cannot forge
+a workflow command.
+
+Symlinks at or inside a claimed path are followed: a target inside the
+repository is claimed too, a target outside makes the class always run.
+
 A class with an input sieve cannot resolve (an `include!` built from an
 unknown env var, a non-literal `generate!` path, a stale Bazel snapshot)
 always runs.

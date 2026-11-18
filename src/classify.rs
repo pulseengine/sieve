@@ -156,8 +156,10 @@ pub fn classify(
     let named = docs_named(repo, cfg, &candidates)?;
     let mut run_all: Option<String> = None;
     for p in &changed {
-        let malformed =
-            p.starts_with('/') || p.split('/').any(|c| c == ".." || c == "." || c.is_empty());
+        // A control character could forge a workflow command in the log.
+        let malformed = p.starts_with('/')
+            || p.chars().any(char::is_control)
+            || p.split('/').any(|c| c == ".." || c == "." || c.is_empty());
         if malformed {
             v.unknown_paths.push(p.clone());
             run_all.get_or_insert_with(|| {

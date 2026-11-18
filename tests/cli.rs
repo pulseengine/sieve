@@ -149,3 +149,17 @@ fn graph_reports_sources() {
     assert_eq!(v["classes"]["a"]["sources"]["a/"], "cargo");
     assert_eq!(v["classes"]["b"]["sources"]["b/"], "hand");
 }
+
+// rivet: verifies REQ-004
+#[test]
+fn a_path_with_a_control_character_runs_everything_and_cannot_forge_a_command() {
+    let d = tree("ctrl");
+    let p = "a/x\r::error::forged.rs";
+    let (_, v, stderr) = classify(&d, &[p], &[]);
+    assert_eq!(v["run_all"], true);
+    assert!(!stderr.contains("\r"), "raw CR reached the log: {stderr:?}");
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("::error")),
+        "{stderr:?}"
+    );
+}
