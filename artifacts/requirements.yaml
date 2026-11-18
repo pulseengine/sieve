@@ -380,6 +380,42 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-003}
 
+  - id: REQ-024
+    type: requirement
+    title: Ship one self-contained binary that starts no git or cargo process to classify
+    status: draft
+    release: v0.2.0
+    description: >
+      Owner direction (2026-11-18). classify and graph read the repository
+      in-process through gix (merge-base, tree diff, index) instead of the
+      git command line. Cargo manifests are parsed with cargo's own schema
+      types (cargo-util-schemas) where they fit; target discovery stays
+      sieve's own, corpus-tested. The cargo-metadata cross-check stays an
+      optional check-graph control that reports refused when cargo is
+      absent: the cargo crate itself pulls libgit2, curl and openssl and
+      would break the single binary and the WASI component.
+    fields: {priority: must, category: constraint}
+    links:
+      - {type: satisfies, target: SSC-002}
+
+  - id: REQ-025
+    type: requirement
+    title: Parse configuration and workflow YAML with rivet-yaml
+    status: draft
+    release: v0.2.0
+    description: >
+      Owner direction (2026-11-18). check-workflows and any YAML config use
+      rivet-yaml (rivet's lossless rowan YAML crate; YAML 1.2 core, so `on:`
+      is a string key; duplicate keys are errors), replacing yaml-rust2.
+      Dependency: git, tag v0.43.0 once rivet cuts it, else v0.42.2. It
+      stays a git dependency (owner: no crates.io publish of the rowan fork
+      or rivet-yaml until upstream rowan is sound). Whether sieve.toml
+      becomes sieve.yaml is a config-format change that goes through the
+      seam block on #3 and its consumers first.
+    fields: {priority: should, category: constraint}
+    links:
+      - {type: satisfies, target: SSC-002}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
