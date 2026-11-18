@@ -7,6 +7,7 @@ mod config;
 mod graph;
 mod lex;
 mod repo;
+mod workflows;
 
 use classify::Verdict;
 use config::Config;
@@ -19,6 +20,7 @@ use std::process::ExitCode;
 pub const CLASSIFY_SCHEMA: &str = "sieve.classify.v1";
 pub const GRAPH_SCHEMA: &str = "sieve.graph.v1";
 pub const CHECK_SCHEMA: &str = "sieve.check.v1";
+pub const WORKFLOWS_SCHEMA: &str = "sieve.workflows.v1";
 pub const CONFIG_SCHEMA: &str = "sieve.config.v1";
 
 const USAGE: &str = "\
@@ -31,6 +33,8 @@ USAGE:
   sieve graph --config <sieve.toml> [--root <dir>] [--format json]
   sieve check-graph --config <sieve.toml> [--root <dir>] [--control <name>]...
                     [--depinfo <class>=<file.d>]... [--format json|text]
+  sieve check-workflows --config <sieve.toml> [--root <dir>] [--workflows <dir>]
+                        [--required <file>] [--format json|text]
   sieve --version | --help
 
 classify: exit 0 with a verdict (run_all included); exit 2 on a usage or
@@ -44,6 +48,13 @@ config error. Every failure selects everything; nothing selects nothing.
 check-graph: exit 0 pass, 1 a control failed, 2 usage, 3 refused.
   controls: graph-inputs, cargo-metadata, true-inputs, no-job, inert-overlap,
             fail-open, bazel-srcs, bazel-snapshot, depinfo
+check-workflows: exit 0 pass, 1 a gate failed, 2 usage, 3 refused (an input is
+missing). For every required context (default .github/required-contexts.txt, or
+[workflows] required_contexts): (a) its workflow triggers on pull_request with no
+paths/paths-ignore key, no branch or types restriction, and on merge_group; (b)
+its job is skipped only through the classifier (a step running `sieve classify
+... --format github-output`), reading only the outputs the HAND-MAINTAINED
+[workflows.job_outputs] map gives it; (c) the classifier fails open.
 ";
 
 struct Args {
@@ -58,6 +69,8 @@ struct Args {
     format: Option<String>,
     controls: Vec<String>,
     depinfo: Vec<String>,
+    workflows: Option<String>,
+    required: Option<String>,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -75,6 +88,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         format: None,
         controls: vec![],
         depinfo: vec![],
+        workflows: None,
+        required: None,
     };
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -88,6 +103,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--format" => a.format = Some(val("--format")?),
             "--control" => a.controls.push(val("--control")?),
             "--depinfo" => a.depinfo.push(val("--depinfo")?),
+            "--workflows" => a.workflows = Some(val("--workflows")?),
+            "--required" => a.required = Some(val("--required")?),
             "--paths" => {
                 while let Some(p) = it.peek() {
                     if p.starts_with("--") {
@@ -104,7 +121,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 fn version() -> String {
     format!(
-        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {CONFIG_SCHEMA}",
+        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {WORKFLOWS_SCHEMA} {CONFIG_SCHEMA}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -131,7 +148,7 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
-    if !["classify", "graph", "check-graph"].contains(&argv[0].as_str()) {
+    if !["classify", "graph", "check-graph", "check-workflows"].contains(&argv[0].as_str()) {
         return usage_error(&format!("unknown command `{}`", argv[0]));
     }
     let a = match parse_args(&argv) {
@@ -171,6 +188,13 @@ fn main() -> ExitCode {
         "check-graph" => {
             check::cmd_check_graph(&a.controls, &a.depinfo, a.format.as_deref(), root, &cfg)
         }
+        "check-workflows" => workflows::cmd_check_workflows(
+            a.workflows.as_deref(),
+            a.required.as_deref(),
+            a.format.as_deref(),
+            root,
+            &cfg,
+        ),
         other => usage_error(&format!("unknown command `{other}`")),
     }
 }

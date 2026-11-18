@@ -54,6 +54,20 @@ pub struct Class {
     pub true_inputs: Vec<String>,
 }
 
+/// `[workflows]`: what `sieve check-workflows` needs beyond the classes.
+#[derive(Debug, Clone, Default)]
+pub struct Workflows {
+    /// Repository-relative required-contexts list (CLI `--required` wins).
+    pub required_contexts: Option<String>,
+    /// HAND-MAINTAINED: required job display name -> the classifier outputs it
+    /// may read. check-workflows proves a job reads only its own outputs, not
+    /// that the map is right; the false-skip controls test the map's content.
+    pub job_outputs: BTreeMap<String, Vec<String>>,
+    /// HAND-MAINTAINED: "<workflow file>:<job id>:<step name>" -> reason a
+    /// `continue-on-error` step that nothing observes is allowed.
+    pub coe_exempt: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     /// Repository-relative path of the config file itself (always run-all).
@@ -69,6 +83,7 @@ pub struct Config {
     pub cmake_root_vars: Vec<String>,
     pub no_job: Vec<String>,
     pub classes: Vec<Class>,
+    pub workflows: Workflows,
     /// sha256 of the config bytes.
     pub digest: String,
 }
@@ -119,7 +134,14 @@ pub fn parse(text: &str, rel_path: &str) -> Result<Config> {
     check_keys(
         top,
         &[
-            "schema", "run_all", "inert", "docs", "zephyr", "check", "class",
+            "schema",
+            "run_all",
+            "inert",
+            "docs",
+            "zephyr",
+            "check",
+            "workflows",
+            "class",
         ],
         rel_path,
     )?;
@@ -281,7 +303,60 @@ pub fn parse(text: &str, rel_path: &str) -> Result<Config> {
         }
         c.classes.push(cl);
     }
+    if let Some(v) = top.get("workflows") {
+        c.workflows = parse_workflows(table(v, "workflows")?, &c.classes)?;
+    }
     Ok(c)
+}
+
+fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Result<Workflows> {
+    check_keys(
+        t,
+        &["required_contexts", "job_outputs", "coe_exempt"],
+        "workflows",
+    )?;
+    let mut w = Workflows::default();
+    if let Some(v) = t.get("required_contexts") {
+        let p = v
+            .as_str()
+            .ok_or("workflows.required_contexts: expected a string")?;
+        if !valid_rel(p) {
+            return Err(format!(
+                "workflows.required_contexts: `{p}` is not a repository-relative path"
+            ));
+        }
+        w.required_contexts = Some(p.to_string());
+    }
+    if let Some(v) = t.get("job_outputs") {
+        for (job, outs) in table(v, "workflows.job_outputs")? {
+            let what = format!("workflows.job_outputs.\"{job}\"");
+            let outs = strs(outs, &what)?;
+            if outs.is_empty() {
+                return Err(format!("{what}: names no classifier output"));
+            }
+            if let Some(bad) = outs.iter().find(|o| !classes.iter().any(|c| &c.name == *o)) {
+                return Err(format!("{what}: `{bad}` is not a [class.<name>]"));
+            }
+            w.job_outputs.insert(job.clone(), outs);
+        }
+    }
+    if let Some(v) = t.get("coe_exempt") {
+        for (key, why) in table(v, "workflows.coe_exempt")? {
+            let what = format!("workflows.coe_exempt.\"{key}\"");
+            if key.splitn(3, ':').count() != 3 {
+                return Err(format!(
+                    "{what}: key must be <workflow file>:<job id>:<step name>"
+                ));
+            }
+            match why.as_str() {
+                Some(r) if !r.trim().is_empty() => {
+                    w.coe_exempt.insert(key.clone(), r.to_string());
+                }
+                _ => return Err(format!("{what}: a non-empty reason string is required")),
+            }
+        }
+    }
+    Ok(w)
 }
 
 #[cfg(test)]
@@ -303,6 +378,21 @@ mod tests {
         .unwrap();
         assert!(c.run_all_prefixes.contains(&".github/".to_string()));
         assert!(c.run_all_files.contains(&"sieve.toml".to_string()));
+    }
+
+    #[test]
+    fn workflows_table_is_validated() {
+        let ok = "[workflows]\nrequired_contexts = \".github/required-contexts.txt\"\n[workflows.job_outputs]\n\"Build\" = [\"a\"]\n[class.a]\nhand = [\"x/\"]\n";
+        let c = parse(ok, "sieve.toml").unwrap();
+        assert_eq!(c.workflows.job_outputs["Build"], vec!["a".to_string()]);
+        let e = parse(&ok.replace("[\"a\"]", "[\"nope\"]"), "sieve.toml").unwrap_err();
+        assert!(e.contains("not a [class.<name>]"), "{e}");
+        let e = parse(
+            &ok.replace("[workflows]", "[workflows]\nbogus = 1"),
+            "sieve.toml",
+        )
+        .unwrap_err();
+        assert!(e.contains("unknown key `bogus`"), "{e}");
     }
 
     #[test]

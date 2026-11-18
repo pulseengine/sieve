@@ -132,19 +132,8 @@ pub fn cmd_check_graph(
                     r.refuse(c, "no .git: the fail-open spot checks need git");
                     continue;
                 }
-                let zero = "0".repeat(40);
-                let cases: [(Option<&str>, Option<&str>); 5] = [
-                    (Some("push"), None),
-                    (Some("merge_group"), Some("HEAD")),
-                    (Some("pull_request"), Some("HEAD")),
-                    (Some("pull_request"), Some(zero.as_str())),
-                    (Some("pull_request"), None),
-                ];
-                for (ev, base) in cases {
-                    let v = classify::git_mode(&root, cfg, ev, base, None);
-                    r.expect(c, v.run_all && v.classes.values().all(|b| *b), "fail-open", || {
-                        format!("event {ev:?} base {base:?}: expected everything selected, got {:?}", v.reason)
-                    });
+                for (ok, msg) in fail_open_cases(&root, cfg) {
+                    r.expect(c, ok, "fail-open", || msg);
                 }
             }
             (_, None) => {} // graph failure already reported
@@ -326,6 +315,33 @@ pub fn cmd_check_graph(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// The fail-open spot checks, shared with `check-workflows` gate (c): push,
+/// merge_group, a pull request with no base, a base git cannot diff and an
+/// empty diff must each select every class. One `(held, message)` per case.
+pub fn fail_open_cases(root: &std::path::Path, cfg: &Config) -> Vec<(bool, String)> {
+    let zero = "0".repeat(40);
+    let cases: [(Option<&str>, Option<&str>); 5] = [
+        (Some("push"), None),
+        (Some("merge_group"), Some("HEAD")),
+        (Some("pull_request"), Some("HEAD")),
+        (Some("pull_request"), Some(zero.as_str())),
+        (Some("pull_request"), None),
+    ];
+    cases
+        .into_iter()
+        .map(|(ev, base)| {
+            let v = classify::git_mode(root, cfg, ev, base, None);
+            (
+                v.run_all && v.classes.values().all(|b| *b),
+                format!(
+                    "event {ev:?} base {base:?}: expected everything selected, got {:?}",
+                    v.reason
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Repository-relative inputs named by a rustc dep-info file. Absolute paths
