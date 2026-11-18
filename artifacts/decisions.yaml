@@ -2,7 +2,8 @@ artifacts:
   - id: DD-001
     type: design-decision
     title: One Rust binary crate, small dependency set, WASI-compatible core
-    status: draft
+    status: implemented
+    release: v0.1.0
     fields:
       decision: >
         A single crate `sieve` with a pure classification core (no I/O beyond
@@ -17,6 +18,7 @@ artifacts:
       alternatives: >
         Ship rivet's single-file prototype as is (no crates): rejected, it
         hand-parses TOML, which is the failure surface behind the crash case.
+      review: author-verified only (tests in CI); no independent review yet
     links:
       - {type: satisfies, target: REQ-008}
       - {type: satisfies, target: REQ-017}
@@ -24,7 +26,8 @@ artifacts:
   - id: DD-002
     type: design-decision
     title: Walk Cargo manifests directly; use cargo metadata only as a cross-check
-    status: draft
+    status: implemented
+    release: v0.1.0
     fields:
       decision: >
         classify and graph parse Cargo.toml themselves (workspace members,
@@ -36,6 +39,7 @@ artifacts:
         Same split as the gale reference. Classification then needs neither
         a toolchain nor network nor .git (plant's request), and the
         cross-check catches walk gaps independently.
+      review: author-verified only (tests in CI); no independent review yet
     links:
       - {type: satisfies, target: REQ-006}
       - {type: satisfies, target: REQ-010}
@@ -44,7 +48,8 @@ artifacts:
   - id: DD-003
     type: design-decision
     title: Fail open by construction at the top of main
-    status: draft
+    status: implemented
+    release: v0.1.0
     fields:
       decision: >
         Every classify path returns a Verdict or an internal error; main maps
@@ -55,6 +60,7 @@ artifacts:
       rationale: >
         One choke point is easier to test and to review than fail-open logic
         spread over every caller; the corpus forced-crash case pins it.
+      review: author-verified only (tests in CI); no independent review yet
     links:
       - {type: satisfies, target: REQ-002}
       - {type: satisfies, target: REQ-003}
@@ -63,7 +69,8 @@ artifacts:
   - id: DD-004
     type: design-decision
     title: Vendor the gale corpus and run it as a Rust integration test
-    status: draft
+    status: implemented
+    release: v0.1.0
     fields:
       decision: >
         Copy tools/ci/classifier-corpus/ from gale 4050000f into tests/corpus/
@@ -77,13 +84,15 @@ artifacts:
       rationale: >
         The corpus is the spec; running the shipped binary end to end tests
         the CLI and the config translation, not only the library.
+      review: author-verified only (tests in CI); no independent review yet
     links:
       - {type: satisfies, target: REQ-012}
 
   - id: DD-005
     type: design-decision
     title: sieve.toml mirrors the corpus gates shape
-    status: draft
+    status: implemented
+    release: v0.1.0
     fields:
       decision: >
         [class.<name>] with cargo, cargo_glob, zephyr, hand (hand entries are
@@ -97,6 +106,7 @@ artifacts:
         The corpus spec already names this shape and gale, relay, rivet and
         loom were exercised against it; non-removable defaults stop a pull
         request from classifying its own config change away.
+      review: author-verified only (tests in CI); no independent review yet
     links:
       - {type: satisfies, target: REQ-005}
       - {type: satisfies, target: REQ-004}

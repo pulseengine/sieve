@@ -225,6 +225,7 @@ fn trig(pr: &str, rest: &str) -> String {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn the_baseline_passes_and_reports_its_checks() {
     let o = run("baseline", &W::base(), ONE);
@@ -237,6 +238,7 @@ fn the_baseline_passes_and_reports_its_checks() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn gate_a_a_workflow_that_may_not_report_is_caught() {
     let mg = "  merge_group:\n";
@@ -363,6 +365,7 @@ fn gate_a_a_workflow_that_may_not_report_is_caught() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn gate_b_the_if_must_be_the_classifier_form() {
     let gif = |s: &str| W {
@@ -465,6 +468,7 @@ fn gate_b_the_if_must_be_the_classifier_form() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn gate_b_a_skip_cannot_come_in_through_needs_steps_or_matrix() {
     let steps = |s: &str| W {
@@ -548,6 +552,7 @@ fn gate_b_a_skip_cannot_come_in_through_needs_steps_or_matrix() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn gate_b_the_classifier_step_must_run_exactly_sieve_classify() {
     let step_env_plus = |extra: &str| format!("{STEP_ENV}{extra}");
@@ -652,6 +657,7 @@ fn gate_b_the_classifier_step_must_run_exactly_sieve_classify() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn the_accepted_forms_pass() {
     let mut w2 = W::base();
@@ -735,6 +741,7 @@ fn the_accepted_forms_pass() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn gate_c_runs_sieve_on_the_tree_and_refuses_without_git() {
     // The classifier is sieve itself, so a plant cannot make it fail closed;
@@ -762,6 +769,7 @@ fn gate_c_runs_sieve_on_the_tree_and_refuses_without_git() {
 }
 
 // rivet: verifies REQ-014
+// rivet: verifies FEAT-002
 #[test]
 fn missing_inputs_are_refused_and_bad_usage_is_exit_2() {
     let f = fixture("inputs", &W::base().render(), ONE, &toml(false), true);

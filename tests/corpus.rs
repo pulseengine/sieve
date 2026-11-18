@@ -394,6 +394,7 @@ fn check_case(
 // rivet: verifies REQ-009
 // rivet: verifies REQ-010
 // rivet: verifies REQ-012
+// rivet: verifies FEAT-001
 #[test]
 fn corpus_every_case_selects_exactly_its_expected_set() {
     let spec = load(&corpus().join("spec.json"));

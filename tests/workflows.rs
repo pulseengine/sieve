@@ -9,6 +9,7 @@ github.event.pull_request.head.repo.full_name == github.repository) && \
 fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"light\"]') || 'ubuntu-latest' }}";
 
 // rivet: verifies REQ-016
+// rivet: verifies FEAT-003
 #[test]
 fn every_job_uses_the_fork_guard() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
@@ -80,6 +81,7 @@ fn release_runners(text: &str) -> usize {
 }
 
 // rivet: verifies REQ-017
+// rivet: verifies FEAT-003
 #[test]
 fn release_signs_what_it_publishes() {
     let text = fs::read_to_string(

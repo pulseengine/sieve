@@ -10,3 +10,6 @@ project:
 sources:
   - path: artifacts
     format: generic-yaml
+
+release:
+  require: coverage
