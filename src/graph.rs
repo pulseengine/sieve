@@ -230,6 +230,8 @@ impl CargoWalk<'_> {
         }
 
         let mut rs_roots: Vec<String> = Vec::new();
+        // Crate roots: a target root resolves `mod x;` in its own directory.
+        let mut target_roots: BTreeSet<String> = BTreeSet::new();
         let mut explicit: Vec<String> = Vec::new();
         for kind in ["lib", "bin", "test", "bench", "example"] {
             let items: Vec<&Value> = match doc.get(kind) {
@@ -327,15 +329,17 @@ impl CargoWalk<'_> {
         }
         for p in explicit {
             if let Some(rel) = norm(&mdir, &p) {
-                if mdir.is_empty() {
-                    // A root-package target claims its directory: its module tree
-                    // (nested inline `mod`, `mod` in tests/benches/examples) lives
-                    // below it, and resolving every module exactly is fragile.
+                if mdir.is_empty() && p.ends_with("lib.rs") {
+                    // the root package's library directory, as the reference does.
+                    // Only the library: claiming every target's directory (benches/,
+                    // tests/) turned unknown paths there into claimed ones and
+                    // narrowed selection on 71 of gale's last 400 commits.
                     let d = dirname(&rel);
                     if !d.is_empty() {
                         cg.add(format!("{d}/"), "cargo");
                     }
                 }
+                target_roots.insert(rel.clone());
                 cg.add(rel.clone(), "cargo");
                 rs_roots.push(rel);
             }
@@ -348,7 +352,8 @@ impl CargoWalk<'_> {
             if !seen.insert(f.clone()) {
                 continue;
             }
-            for sub in scan_rs(repo, &f, &mdir, cg) {
+            let is_root = target_roots.contains(&f) || basename(&f) == "build.rs";
+            for sub in scan_rs(repo, &f, &mdir, is_root, cg) {
                 cg.add(sub.clone(), "cargo");
                 todo.push(sub);
             }
@@ -494,7 +499,6 @@ struct Res {
     cfg_attr_path: Regex,
     include: Regex,
     include_dir: Regex,
-    module: Regex,
     join_chain: Regex,
     join_lit: Regex,
     incbin: Regex,
@@ -511,7 +515,6 @@ fn res() -> &'static Res {
         ))
         .unwrap(),
         include_dir: Regex::new(r"\binclude_dir!\s*\(\s*([^)]*)\)").unwrap(),
-        module: Regex::new(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;").unwrap(),
         join_chain: Regex::new(r#"(?:\.join\(\s*"(?:[^"\\]|\\.)*"\s*\)\s*)+"#).unwrap(),
         join_lit: Regex::new(&format!(r"\.join\(\s*{STR}\s*\)")).unwrap(),
         incbin: Regex::new(r#"\.incbin\s+(?:\\?"([^"\\]*)\\?"|(\S+))"#).unwrap(),
@@ -520,7 +523,13 @@ fn res() -> &'static Res {
 }
 
 /// Claim what one .rs file pulls in from elsewhere; return module files to walk.
-fn scan_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) -> Vec<String> {
+fn scan_rs(
+    repo: &Repo,
+    file: &str,
+    mdir: &str,
+    crate_root: bool,
+    cg: &mut ClassGraph,
+) -> Vec<String> {
     let Ok(text) = repo.read(file) else {
         return vec![];
     };
@@ -641,23 +650,88 @@ fn scan_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) -> Vec<Stri
         }
     }
 
-    // Module files this file loads.
+    // Module files this file loads. A crate root (lib.rs, main.rs, a target
+    // root such as tests/it.rs) and a mod.rs resolve in their own directory;
+    // any other file in a directory named after it. Inline `mod a { mod b; }`
+    // nests: b is at <dir>/a/b.rs.
     let stem = basename(file).trim_end_matches(".rs");
-    let subdir = if ["lib", "main", "mod"].contains(&stem) || basename(file) == "build.rs" {
+    let subdir = if crate_root || ["lib", "main", "mod"].contains(&stem) {
         fdir.to_string()
     } else {
         norm(fdir, stem).unwrap_or_default()
     };
-    for m in r.module.captures_iter(src) {
+    for path in module_decls(src) {
+        let rel = path.join("/");
         for cand in [
-            format!("{}/{}.rs", subdir, &m[1]),
-            format!("{}/{}/mod.rs", subdir, &m[1]),
+            format!("{subdir}/{rel}.rs"),
+            format!("{subdir}/{rel}/mod.rs"),
         ] {
             let cand = cand.trim_start_matches('/').to_string();
             if repo.is_file(&cand) {
                 out.push(cand);
             }
         }
+    }
+    out
+}
+
+/// Every out-of-line `mod name;` with the inline modules around it, as a
+/// path: `mod a { mod b; }` gives [a, b]. Strings in `code` are skipped when
+/// counting braces.
+fn module_decls(code: &str) -> Vec<Vec<String>> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*([;{])").unwrap());
+    let decls: Vec<(usize, usize, String, bool)> = re
+        .captures_iter(code)
+        .map(|c| {
+            let g = c.get(2).unwrap();
+            (
+                c.get(0).unwrap().start(),
+                g.start(),
+                c[1].to_string(),
+                &c[2] == "{",
+            )
+        })
+        .collect();
+    let b = code.as_bytes();
+    let (mut out, mut stack, mut depth, mut next) =
+        (Vec::new(), Vec::<(String, i32)>::new(), 0i32, 0usize);
+    let mut i = 0;
+    while i < b.len() {
+        while next < decls.len() && decls[next].0 < i {
+            next += 1; // a declaration that began inside a skipped string
+        }
+        if next < decls.len() && decls[next].0 == i {
+            let (_, brace_at, name, inline) = decls[next].clone();
+            next += 1;
+            if inline {
+                stack.push((name, depth + 1));
+                depth += 1;
+            } else {
+                let mut p: Vec<String> = stack.iter().map(|(n, _)| n.clone()).collect();
+                p.push(name);
+                out.push(p);
+            }
+            i = brace_at + 1;
+            continue;
+        }
+        match b[i] {
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                if stack.last().is_some_and(|(_, d)| *d == depth) {
+                    stack.pop();
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        i += 1;
     }
     out
 }
@@ -1056,8 +1130,8 @@ fn label_path(pkg: &str, label: &str) -> Option<String> {
 }
 
 /// A Bazel class: literal srcs, hdrs and data of the named BUILD files, and
-/// every in-repository package their `deps` reach, transitively (claimed as
-/// a whole package directory). An @external dep is not a repository input:
+/// the literal inputs of every in-repository package their `deps` reach,
+/// transitively. An @external dep is not a repository input:
 /// MODULE.bazel and its lock select everything.
 fn bazel_walk(
     repo: &Repo,
@@ -1095,9 +1169,9 @@ fn bazel_walk(
                 .push(format!("{build}: dep {l} leaves the repository"));
             continue;
         };
-        if !dep_pkg.is_empty() {
-            cg.add(format!("{dep_pkg}/"), "bazel");
-        }
+        // No whole-package claim: that would turn unknown files in the dep's
+        // package into claimed ones and switch off their fail-open. The
+        // recursion below claims the dep BUILD file and its literal inputs.
         let dep_build = ["BUILD.bazel", "BUILD"]
             .iter()
             .map(|f| {
@@ -1222,7 +1296,7 @@ mod tests {
             ],
         );
         let mut cg = ClassGraph::default();
-        scan_rs(&repo, "c/src/lib.rs", "c", &mut cg);
+        scan_rs(&repo, "c/src/lib.rs", "c", true, &mut cg);
         assert!(cg.claims.contains_key("c/wit/"), "{:?}", cg.claims);
         assert_eq!(cg.claims["c/wit/"], "wit");
     }
@@ -1237,7 +1311,7 @@ mod tests {
             )],
         );
         let mut cg = ClassGraph::default();
-        scan_rs(&repo, "c/src/lib.rs", "c", &mut cg);
+        scan_rs(&repo, "c/src/lib.rs", "c", true, &mut cg);
         assert_eq!(cg.unresolved.len(), 1, "{:?}", cg.unresolved);
     }
 
@@ -1268,6 +1342,13 @@ mod tests {
     }
 
     #[test]
+    fn module_decls_track_inline_nesting() {
+        let d = module_decls("mod a { mod b; fn f() { let s = \"}\"; } mod c { mod d; } } mod e; #[cfg(x)] mod g; mod h; mod i;");
+        let got: Vec<String> = d.iter().map(|p| p.join("/")).collect();
+        assert_eq!(got, ["a/b", "a/c/d", "e", "g", "h", "i"]);
+    }
+
+    #[test]
     fn a_directory_claim_covers_its_bare_path() {
         let claims = vec!["external/testsuite/".to_string()];
         assert!(claimed("external/testsuite", &claims));
@@ -1288,7 +1369,7 @@ mod tests {
             ],
         );
         let mut cg = ClassGraph::default();
-        scan_rs(&repo, "crates/c/tests/t.rs", "crates/c", &mut cg);
+        scan_rs(&repo, "crates/c/tests/t.rs", "crates/c", true, &mut cg);
         assert_eq!(
             cg.claims.get("test-data/x.aadl"),
             Some(&"literal"),
@@ -1321,7 +1402,7 @@ mod tests {
             )],
         );
         let mut cg = ClassGraph::default();
-        scan_rs(&repo, "c/src/lib.rs", "c", &mut cg);
+        scan_rs(&repo, "c/src/lib.rs", "c", true, &mut cg);
         assert_eq!(cg.unresolved.len(), 1, "{:?}", cg.unresolved);
     }
 

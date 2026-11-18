@@ -211,3 +211,47 @@ fn zephyr_cmake_relative_sources_are_claimed() {
     );
     assert_selects_a(&d, "drivers/foo.c");
 }
+
+/// (run_all, class a selected) helper above; this pins the other direction:
+/// widening a claim must not swallow a path no class reads. Claiming whole
+/// target or dep-package directories did exactly that (71 of gale's last 400
+/// commits selected less than the reference).
+// rivet: verifies REQ-004
+#[test]
+fn an_unclaimed_file_next_to_a_target_or_in_a_dep_package_still_fails_open() {
+    let d = tree(
+        "no-mask-root",
+        "[class.a]\ncargo = [\"Cargo.toml\"]\n[class.b]\nhand = [\"zz/\"]\n",
+        &[
+            ("Cargo.toml", ROOT_PKG),
+            ("src/lib.rs", ""),
+            ("benches/b.rs", "fn main() {}"),
+            ("benches/other/run.sh", "echo"),
+        ],
+    );
+    assert!(
+        selects_a(&d, "benches/other/run.sh").0,
+        "benches/other/run.sh must run everything"
+    );
+    let d = tree(
+        "no-mask-bazel",
+        "[class.a]\nbazel_build = [\"app/BUILD.bazel\"]\n[class.b]\nhand = [\"zz/\"]\n",
+        &[
+            (
+                "app/BUILD.bazel",
+                "cc_binary(name=\"app\", srcs=[\"app.cc\"], deps=[\"//lib:core\"])\n",
+            ),
+            ("app/app.cc", ""),
+            (
+                "lib/BUILD.bazel",
+                "cc_library(name=\"core\", srcs=[\"core.cc\"])\n",
+            ),
+            ("lib/core.cc", ""),
+            ("lib/stray.txt", "x"),
+        ],
+    );
+    assert!(
+        selects_a(&d, "lib/stray.txt").0,
+        "lib/stray.txt must run everything"
+    );
+}
