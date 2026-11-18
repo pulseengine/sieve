@@ -237,6 +237,78 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-006}
 
+  - id: REQ-019
+    type: requirement
+    title: Count observed misses by comparing sieve's verdict with a full run
+    status: draft
+    description: >
+      Owner-approved input (pulseengine.eu prior-art survey, 2026-11-18;
+      Microsoft Test Impact Analysis, Meta predictive test selection). On
+      main or every Nth merge-queue run, record sieve's verdict for the diff
+      and run every job; report each job that failed while sieve would have
+      skipped it. A field oracle next to plant's planted controls.
+    fields: {priority: should, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-020
+    type: requirement
+    title: Explain every selection and every skip in the classify output
+    status: draft
+    description: >
+      `sieve classify --explain` reports, per class, the changed path that
+      selected it and the edge kind (cargo, path-attr, include, wit,
+      build-rs, literal, symlink, bazel, zephyr, hand, run-all rule), and
+      for an unresolved class the unresolved input, so a skip is reviewable
+      in the PR log. Survey input (Nx).
+    fields: {priority: should, category: interface}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-021
+    type: requirement
+    title: Report unresolved inputs in the JSON verdict with a reason code
+    status: draft
+    description: >
+      When the derivation knows it cannot see an input (glob, variable,
+      @external label, unresolvable include, non-literal generate! path,
+      stale snapshot, outside symlink), the JSON names the class and a
+      stable code, not only stderr. The class keeps running and a graph
+      refusal keeps selecting everything, as today.
+    fields: {priority: should, category: interface}
+    links:
+      - {type: constraint-satisfies, target: SC-003}
+
+  - id: REQ-022
+    type: requirement
+    title: Evaluate bazel-diff or target-determinator for the Bazel affected set
+    status: draft
+    description: >
+      Survey input. Compare static Bazel graph hashing with sieve's literal
+      srcs and query snapshots on a Bazel consumer (rules_wasm_component,
+      synth, sigil). Keep the fail-open rules on top: a BUILD, .bzl or
+      MODULE change still selects everything (bazel-diff documents its
+      possible-readers output as incomplete).
+    fields: {priority: could, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+
+  - id: REQ-023
+    type: requirement
+    title: Treat toolchain, solver and environment pins as inputs of proof classes
+    status: draft
+    description: >
+      Proof jobs (Kani, Verus, Rocq, Lean) depend on inputs dep-info does
+      not show. Built in as run-all: rust-toolchain*, Cargo.lock, varve.toml,
+      varve-realms.toml, Bazel files, .github/** (tool versions and env vars
+      pinned in workflows), flake.nix, flake.lock, lean-toolchain. Solver
+      and tool pins in other files are per-repo [run_all] or class inputs.
+      Each kind gets a planted control (corpus case here; plant control in
+      the consumer).
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-003}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
