@@ -50,7 +50,8 @@ impl ClassGraph {
 pub fn claimed<'a>(p: &str, claims: impl IntoIterator<Item = &'a String>) -> bool {
     claims.into_iter().any(|c| {
         if c.ends_with('/') {
-            p.starts_with(c.as_str())
+            // the bare directory path too: a submodule (gitlink) bump diffs as `dir`
+            p.starts_with(c.as_str()) || p == &c[..c.len() - 1]
         } else {
             p == c
         }
@@ -595,11 +596,24 @@ fn scan_rs(repo: &Repo, file: &str, mdir: &str, cg: &mut ClassGraph) -> Vec<Stri
         }
         // A literal naming an existing repository path relative to the
         // package root (cargo's cwd for tests and the build): a runtime read.
+        // A leading `/` is tried relative too: format!("{}/../x", env!("CARGO_MANIFEST_DIR")).
         if lit.contains('/') || lit.contains('.') {
-            if let Some(rel) = norm(mdir, &lit) {
-                if !rel.is_empty() && repo.exists(&rel) {
-                    if let Some(c) = repo.claim_for(Some(rel)) {
-                        cg.add(c, "literal");
+            // a leading `{}` or `{name}` placeholder stands for the manifest dir
+            let after_placeholder = lit
+                .strip_prefix('{')
+                .and_then(|s| s.split_once('}'))
+                .map(|(_, rest)| rest)
+                .unwrap_or(&lit);
+            for l in [
+                lit.as_str(),
+                lit.trim_start_matches('/'),
+                after_placeholder.trim_start_matches('/'),
+            ] {
+                if let Some(rel) = norm(mdir, l) {
+                    if !rel.is_empty() && repo.exists(&rel) {
+                        if let Some(c) = repo.claim_for(Some(rel)) {
+                            cg.add(c, "literal");
+                        }
                     }
                 }
             }
@@ -1117,6 +1131,36 @@ mod tests {
         let mut cg = ClassGraph::default();
         scan_rs(&repo, "c/src/lib.rs", "c", &mut cg);
         assert_eq!(cg.unresolved.len(), 1, "{:?}", cg.unresolved);
+    }
+
+    #[test]
+    fn a_directory_claim_covers_its_bare_path() {
+        let claims = vec!["external/testsuite/".to_string()];
+        assert!(claimed("external/testsuite", &claims));
+        assert!(claimed("external/testsuite/a.wast", &claims));
+        assert!(!claimed("external/testsuite2", &claims));
+    }
+
+    #[test]
+    fn a_manifest_dir_format_literal_is_a_runtime_read() {
+        let repo = tree(
+            "fmtlit",
+            &[
+                (
+                    "crates/c/tests/t.rs",
+                    "let p = format!(\"{}/../../test-data/x.aadl\", env!(\"CARGO_MANIFEST_DIR\"));",
+                ),
+                ("test-data/x.aadl", "x"),
+            ],
+        );
+        let mut cg = ClassGraph::default();
+        scan_rs(&repo, "crates/c/tests/t.rs", "crates/c", &mut cg);
+        assert_eq!(
+            cg.claims.get("test-data/x.aadl"),
+            Some(&"literal"),
+            "{:?}",
+            cg.claims
+        );
     }
 
     #[test]
