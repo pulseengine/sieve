@@ -52,8 +52,8 @@ fn release_runners(text: &str) -> usize {
         .collect();
     assert_eq!(
         triggers,
-        ["push", "workflow_dispatch"],
-        "release.yml may run only on a tag push or a manual dispatch"
+        ["push"],
+        "release.yml may run only on a tag push (signing identity refs/tags/v*)"
     );
     assert!(
         !text

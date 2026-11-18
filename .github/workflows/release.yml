@@ -21,13 +21,6 @@ on:
   push:
     tags:
       - "v*"
-  # Re-run for a tag whose first run failed partway. The tag must exist.
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing release tag to (re)build, e.g. v0.1.0"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -44,21 +37,19 @@ jobs:
   # (varve#38: a binary that reports the previous version).
   version-guard:
     name: Tag names the crate version
-    # A manual re-run is accepted only when dispatched from main, so the
-    # signing identity is always refs/tags/v* or refs/heads/main.
-    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    # Tag pushes only: the signing identity is always refs/tags/v*, the only
+    # identity the varve layer accepts (it refuses branch-signed sums). To
+    # re-run, delete the release and re-push the tag.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.ref }}
           persist-credentials: false
       - name: Compare the tag with Cargo.toml
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          VERSION="${GITHUB_REF#refs/tags/}"
           scripts/release-check.sh version-guard "$VERSION"
 
   build-binaries:
@@ -85,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.ref }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable, 2026-11-15
@@ -105,10 +96,9 @@ jobs:
       - name: Package archive
         env:
           TARGET: ${{ matrix.target }}
-          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          VERSION="${GITHUB_REF#refs/tags/}"
           ARCHIVE="sieve-${VERSION}-${TARGET}.tar.gz"
           mkdir -p staging
           cp "target/${TARGET}/release/sieve" staging/
@@ -142,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.ref }}
           persist-credentials: false
 
       - name: Install cargo-cyclonedx
@@ -173,7 +163,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.ref }}
           persist-credentials: false
 
       - name: Download all build artifacts
@@ -182,11 +172,9 @@ jobs:
           path: artifacts
 
       - name: Flatten release assets
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          VERSION="${GITHUB_REF#refs/tags/}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BARE=${VERSION#v}" >> "$GITHUB_ENV"
           mkdir -p release-assets
@@ -247,7 +235,7 @@ jobs:
 
       # Verify with:
       #   cosign verify-blob \
-      #     --certificate-identity-regexp '^https://github.com/pulseengine/sieve/.github/workflows/release.yml@refs/(tags/v.*|heads/main)$' \
+      #     --certificate-identity-regexp '^https://github.com/pulseengine/sieve/.github/workflows/release.yml@refs/tags/v.*$' \
       #     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
       #     --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
       - name: Sign SHA256SUMS with cosign (keyless OIDC)
@@ -273,7 +261,7 @@ jobs:
           Verify this release:
 
               cosign verify-blob \\
-                --certificate-identity-regexp '^https://github.com/pulseengine/sieve/.github/workflows/release.yml@refs/(tags/v.*|heads/main)$' \\
+                --certificate-identity-regexp '^https://github.com/pulseengine/sieve/.github/workflows/release.yml@refs/tags/v.*$' \\
                 --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\
                 --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
               sha256sum -c --ignore-missing SHA256SUMS.txt
