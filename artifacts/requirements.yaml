@@ -236,3 +236,29 @@ artifacts:
     fields: {priority: should, category: non-functional}
     links:
       - {type: constraint-satisfies, target: SC-006}
+
+  - id: FEAT-001
+    type: feature
+    title: sieve classify, graph and check-graph CLI
+    status: draft
+    description: >
+      The Rust CLI: classify (git, paths and gate-probe modes; json and
+      github-output), graph (sieve.graph.v1) and check-graph (graph-inputs,
+      cargo-metadata, true-inputs, no-job, inert-overlap, fail-open,
+      bazel-srcs, bazel-snapshot, depinfo controls).
+    fields:
+      phase: phase-1
+    links:
+      - {type: satisfies, target: REQ-001}
+      - {type: satisfies, target: REQ-002}
+      - {type: satisfies, target: REQ-003}
+      - {type: satisfies, target: REQ-004}
+      - {type: satisfies, target: REQ-005}
+      - {type: satisfies, target: REQ-006}
+      - {type: satisfies, target: REQ-007}
+      - {type: satisfies, target: REQ-008}
+      - {type: satisfies, target: REQ-009}
+      - {type: satisfies, target: REQ-010}
+      - {type: satisfies, target: REQ-011}
+      - {type: satisfies, target: REQ-012}
+      - {type: satisfies, target: REQ-018}

@@ -7,7 +7,9 @@ artifacts:
       decision: >
         A single crate `sieve` with a pure classification core (no I/O beyond
         a file-tree trait) and a thin CLI shell that does git, cargo and file
-        access. Dependencies limited to toml, serde, serde_json and clap.
+        access. Dependencies: toml, serde_json, regex, aho-corasick (the docs
+        basename index) and sha2 (inputs_hash). Arguments are parsed by hand;
+        no clap.
       rationale: >
         The core can later compile to a WASI component unchanged; the small
         dependency set keeps the supply-chain surface of a tool that runs in
@@ -69,7 +71,9 @@ artifacts:
         each case's tree in a temp dir (git cases make the two commits),
         translates spec.json gates into a sieve.toml, runs the built binary
         and compares the selected set exactly (both directions) plus warning,
-        check and error expectations. Every case is a separate named test.
+        check and error expectations, in json and github-output format, and
+        runs every paths-mode case again with .git removed. One test reports
+        every case by name and fails listing all failing cases.
       rationale: >
         The corpus is the spec; running the shipped binary end to end tests
         the CLI and the config translation, not only the library.

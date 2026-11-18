@@ -1,0 +1,4 @@
+Vendored unchanged from pulseengine/gale, branch reference/l7-ci-classifier,
+commit 4050000fa4cc7fc5dd9bccfe86f896ee08c87f7c, path tools/ci/classifier-corpus/
+(git tree be3c9029d7f6a526a2c9a633e1ec15abb1197e55). Copied 2026-11-18. Update only by copying a newer gale corpus
+whole and recording the new commit here.

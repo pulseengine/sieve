@@ -45,3 +45,25 @@ workflow builds the assets, writes SHA256SUMS and signs it with cosign; varve
 then adds sieve to the pulseengine layer as a [[tool]].
 Consumer switch-over in each repo is gated by the 400-commit old-vs-new
 equivalence run (REQ-013).
+
+## Step 3 status (2026-11-18)
+
+Done in feat/classify-cli: items 1-7. Not done: item 8 (check-workflows).
+
+- Corpus: 74/74, exact selected set; json and github-output agree on every
+  case; every paths-mode case also passes with .git removed.
+- Potency: 10 planted defects (drop cfg_attr path, .incbin, runtime literal
+  reads, join chains, package.metadata.component, generate!, path deps; the
+  unknown-path rule; the docs namer rule; unresolved forcing) each turn the
+  suite red. generate! first survived (the literal scan covers literal
+  paths); unit tests for the default wit/ dir and a non-literal path now kill it.
+- gale's real tree (reference/l7-ci-classifier at 4050000f) with the
+  reference's GATES as sieve.toml: check-graph 2,056/2,056 graph controls and
+  355/355 cargo-metadata controls hold.
+- Equivalence on gale (reference in GATE_PROBE_FILES mode vs sieve, last 400
+  first-parent commits of origin/main, same tree): 399 identical, 0 narrower,
+  1 wider. The wider one is explained: without git, sieve walks the tree and
+  read an untracked __pycache__/classify-changes.pyc that names the docs
+  file; `git grep` only searches tracked files. Safe direction.
+- Known gap: the walk (no-.git mode) includes untracked files, so local junk
+  can only widen selection, never narrow it.
