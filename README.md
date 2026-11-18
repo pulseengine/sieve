@@ -88,7 +88,6 @@ case against the built binary and requires the exact expected set in both
 directions. Safety analysis, requirements and design decisions are in
 `artifacts/` (rivet).
 
-License: Apache-2.0.
 
 ## Workflow gates
 
@@ -106,3 +105,5 @@ against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
   `[workflows.job_outputs]` map (job to classes) is HAND-MAINTAINED;
 - (c) the classifier selects everything on push, merge_group, no base, a bad
   base and an empty diff.
+
+License: Apache-2.0.
