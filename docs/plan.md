@@ -40,6 +40,8 @@ Exit for step 3: 74 of 74 corpus cases pass, every case selecting exactly
 its expected set; `cargo test --no-fail-fast` green in CI on the
 self-hosted light runner behind the fork guard.
 
-Step 4 (release) follows release-artifact-pipeline, mirroring plant.
+Step 4 (release) follows release-artifact-pipeline, mirroring plant: the tag
+workflow builds the assets, writes SHA256SUMS and signs it with cosign; varve
+then adds sieve to the pulseengine layer as a [[tool]].
 Consumer switch-over in each repo is gated by the 400-commit old-vs-new
 equivalence run (REQ-013).
