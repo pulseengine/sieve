@@ -4,6 +4,7 @@
 mod check;
 mod classify;
 mod config;
+mod equivalence;
 mod gitrepo;
 mod graph;
 mod lex;
@@ -23,6 +24,7 @@ pub const GRAPH_SCHEMA: &str = "sieve.graph.v1";
 pub const CHECK_SCHEMA: &str = "sieve.check.v1";
 pub const WORKFLOWS_SCHEMA: &str = "sieve.workflows.v1";
 pub const CONFIG_SCHEMA: &str = "sieve.config.v1";
+pub const EQUIVALENCE_SCHEMA: &str = "sieve.equivalence.v1";
 
 const USAGE: &str = "\
 sieve: which heavy CI jobs does a change touch? When unsure, everything runs.
@@ -36,6 +38,9 @@ USAGE:
                     [--depinfo <class>=<file.d>]... [--format json|text]
   sieve check-workflows --config <sieve.toml> [--root <dir>] [--workflows <dir>]
                         [--required <file>] [--format json|text]
+  sieve equivalence --config <sieve.toml> --old <detector> [--old-arg <a>]...
+                    [--ref <rev> (origin/main)] [--commits <n> (400)]
+                    [--map <old-output>=<class>]... [--format json|text]
   sieve --version | --help
 
 classify: exit 0 with a verdict (run_all included); exit 2 on a usage or
@@ -50,6 +55,11 @@ config error. Every failure selects everything; nothing selects nothing.
   $GITHUB_OUTPUT (stdout if unset). Wire jobs with
     !cancelled() && (needs.C.result != 'success' || needs.C.outputs.<o> != 'false')
 check-graph: exit 0 pass, 1 a control failed, 2 usage, 3 refused.
+equivalence: the switch-over gate. For each of the last N first-parent
+  commits of --ref, runs the old detector with GATE_PROBE_FILES=<its diff>
+  and GITHUB_OUTPUT=<file>, classifies the same paths with sieve, and
+  compares class by class. Exit 0 none narrower and no error, 1 a narrowing
+  or an uncompared commit, 2 usage, 3 refused (nothing compared).
   controls: graph-inputs, cargo-metadata, true-inputs, no-job, inert-overlap,
             fail-open, bazel-srcs, bazel-snapshot, depinfo
 check-workflows: exit 0 pass, 1 a gate failed, 2 usage, 3 refused (an input is
@@ -76,6 +86,11 @@ struct Args {
     workflows: Option<String>,
     required: Option<String>,
     explain: bool,
+    old: Option<String>,
+    old_args: Vec<String>,
+    refspec: Option<String>,
+    commits: Option<String>,
+    map: Vec<String>,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -96,6 +111,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         workflows: None,
         required: None,
         explain: false,
+        old: None,
+        old_args: vec![],
+        refspec: None,
+        commits: None,
+        map: vec![],
     };
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -110,6 +130,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--control" => a.controls.push(val("--control")?),
             "--depinfo" => a.depinfo.push(val("--depinfo")?),
             "--explain" => a.explain = true,
+            "--old" => a.old = Some(val("--old")?),
+            "--old-arg" => a.old_args.push(val("--old-arg")?),
+            "--ref" => a.refspec = Some(val("--ref")?),
+            "--commits" => a.commits = Some(val("--commits")?),
+            "--map" => a.map.push(val("--map")?),
             "--workflows" => a.workflows = Some(val("--workflows")?),
             "--required" => a.required = Some(val("--required")?),
             "--paths" => {
@@ -128,7 +153,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 fn version() -> String {
     format!(
-        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {WORKFLOWS_SCHEMA} {CONFIG_SCHEMA}",
+        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {WORKFLOWS_SCHEMA} {EQUIVALENCE_SCHEMA} {CONFIG_SCHEMA}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -155,7 +180,15 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
-    if !["classify", "graph", "check-graph", "check-workflows"].contains(&argv[0].as_str()) {
+    if ![
+        "classify",
+        "graph",
+        "check-graph",
+        "check-workflows",
+        "equivalence",
+    ]
+    .contains(&argv[0].as_str())
+    {
         return usage_error(&format!("unknown command `{}`", argv[0]));
     }
     let a = match parse_args(&argv) {
@@ -202,6 +235,35 @@ fn main() -> ExitCode {
             root,
             &cfg,
         ),
+        "equivalence" => {
+            let Some(old) = a.old.clone() else {
+                return usage_error("equivalence needs --old <detector>");
+            };
+            let commits = match a.commits.as_deref().unwrap_or("400").parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => return usage_error("--commits takes a positive number"),
+            };
+            let mut map = std::collections::BTreeMap::new();
+            for m in &a.map {
+                let Some((o, n)) = m.split_once('=') else {
+                    return usage_error("--map takes <old-output>=<class>");
+                };
+                map.insert(o.to_string(), n.to_string());
+            }
+            let format = a.format.clone().unwrap_or_else(|| "text".into());
+            if !["json", "text"].contains(&format.as_str()) {
+                return usage_error(&format!("unknown --format `{format}`"));
+            }
+            let opts = equivalence::Opts {
+                old,
+                old_args: a.old_args.clone(),
+                refspec: a.refspec.clone().unwrap_or_else(|| "origin/main".into()),
+                commits,
+                map,
+                format,
+            };
+            equivalence::cmd(&opts, root, &cfg)
+        }
         other => usage_error(&format!("unknown command `{other}`")),
     }
 }

@@ -211,13 +211,16 @@ artifacts:
   - id: REQ-013
     type: requirement
     title: Gate every consumer switch-over and every release by an old-vs-new equivalence run
-    status: draft
+    status: verified
     description: >
       Run the previous and the new classifier in GATE_PROBE_FILES mode over
       each first-parent commit diff of the consumer's main (400 commits).
       Every difference is listed and must be an intended narrowing.
     release: v0.2.0
-    fields: {priority: must, category: constraint}
+    fields:
+      priority: must
+      category: constraint
+      review: author-verified only (tests/equivalence.rs; gale 400/400 identical against its Python reference); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-005}
 
@@ -499,3 +502,19 @@ artifacts:
     links:
       - {type: satisfies, target: REQ-020}
       - {type: satisfies, target: REQ-021}
+
+  - id: FEAT-005
+    type: feature
+    title: sieve equivalence, the old-vs-new switch-over gate
+    status: verified
+    release: v0.2.0
+    description: >
+      Runs a consumer's old detector in GATE_PROBE_FILES mode over the last N
+      first-parent commits of a ref and compares its outputs with sieve's
+      classification of the same paths, class by class; a narrowing or an
+      uncompared commit fails.
+    fields:
+      phase: phase-2
+      review: "author-verified only (tests/equivalence.rs; gale 400/400 identical against its Python reference; negative control narrower on 2 of 30); no independent review yet"
+    links:
+      - {type: satisfies, target: REQ-013}

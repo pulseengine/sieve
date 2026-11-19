@@ -89,6 +89,23 @@ hand = ["proofs/"]               # HAND-MAINTAINED; `sieve graph` labels these "
 true_inputs = ["proofs/sem.v"]   # check-graph: each must select this class via the graph
 ```
 
+## Switching a repository over
+
+Before a repository's workflows read sieve instead of their current change
+detector, compare the two on the repository's own history:
+
+```sh
+sieve equivalence --config sieve.toml --old python3 --old-arg tools/ci/classify-changes.py \
+  --ref origin/main --commits 400 [--map old_output=class]...
+```
+
+For each of the last 400 first-parent commits it runs the old detector with
+`GATE_PROBE_FILES` set to that commit's diff, classifies the same paths with
+sieve, and compares class by class. Exit 0 means no commit selects less under
+sieve and every commit was compared; any narrowing or a failed run of the old
+detector exits 1. On gale's history against its Python reference: 400/400
+identical.
+
 ## Verification
 
 `tests/corpus/` is the language-neutral classifier corpus from gale

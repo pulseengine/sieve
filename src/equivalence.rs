@@ -1,0 +1,182 @@
+//! `sieve equivalence`: the switch-over gate (REQ-013). Over the last N
+//! first-parent commits of a ref, run the consumer's old detector in
+//! GATE_PROBE_FILES mode on each commit's own diff and classify the same
+//! paths with sieve; every class sieve selects less than the old detector is
+//! a narrowing. Exit 0 no narrowing and no error, 1 a narrowing or an
+//! uncompared commit (old detector failed), 2 usage, 3 refused (nothing
+//! could be compared).
+
+use crate::classify;
+use crate::config::Config;
+use crate::gitrepo;
+use crate::repo::Repo;
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+
+pub struct Opts {
+    pub old: String,
+    pub old_args: Vec<String>,
+    pub refspec: String,
+    pub commits: usize,
+    /// old output name -> sieve class
+    pub map: BTreeMap<String, String>,
+    pub format: String,
+}
+
+/// Run the old detector on one path list; its outputs as name -> bool.
+fn run_old(
+    o: &Opts,
+    root: &Path,
+    paths_file: &Path,
+    out_file: &Path,
+) -> Result<BTreeMap<String, bool>, String> {
+    let _ = std::fs::remove_file(out_file);
+    let st = Command::new(&o.old)
+        .args(&o.old_args)
+        .current_dir(root)
+        .env("GATE_PROBE_FILES", paths_file)
+        .env("GITHUB_OUTPUT", out_file)
+        .env_remove("EVENT_NAME")
+        .env_remove("BASE_SHA")
+        .output()
+        .map_err(|e| format!("run {}: {e}", o.old))?;
+    if !st.status.success() {
+        return Err(format!("{} exited {:?}", o.old, st.status.code()));
+    }
+    let text = std::fs::read_to_string(out_file)
+        .map_err(|e| format!("{} wrote no GITHUB_OUTPUT: {e}", o.old))?;
+    let mut m = BTreeMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            let k = o
+                .map
+                .get(k.trim())
+                .cloned()
+                .unwrap_or_else(|| k.trim().to_string());
+            m.insert(k, v.trim() == "true");
+        }
+    }
+    Ok(m)
+}
+
+pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
+    let commits = match gitrepo::first_parent_commits(&root, &o.refspec, o.commits) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("sieve equivalence: refused: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    let tmp = std::env::temp_dir().join(format!("sieve-equivalence-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&tmp) {
+        eprintln!("sieve equivalence: refused: {e}");
+        return ExitCode::from(3);
+    }
+    let (paths_file, out_file) = (tmp.join("paths.txt"), tmp.join("github_output"));
+    let repo = Repo {
+        root: root.clone(),
+        git: false,
+    };
+    let classes: BTreeSet<String> = cfg.classes.iter().map(|c| c.name.clone()).collect();
+    let (mut identical, mut wider, mut errors) = (0usize, 0usize, Vec::new());
+    let mut narrower: Vec<serde_json::Value> = Vec::new();
+    let mut compared_classes: BTreeSet<String> = BTreeSet::new();
+    let mut compared = 0usize;
+    for (commit, parent) in &commits {
+        let paths = match gitrepo::diff_names(&root, parent, commit) {
+            Ok(p) if !p.is_empty() => p,
+            Ok(_) => continue, // an empty commit: both sides run everything
+            Err(e) => {
+                errors.push(json!({"commit": commit, "error": e}));
+                continue;
+            }
+        };
+        if let Err(e) = std::fs::write(&paths_file, paths.join("\n") + "\n") {
+            errors.push(json!({"commit": commit, "error": e.to_string()}));
+            continue;
+        }
+        let old = match run_old(o, &root, &paths_file, &out_file) {
+            Ok(m) => m,
+            Err(e) => {
+                errors.push(json!({"commit": commit, "error": e}));
+                continue;
+            }
+        };
+        let new = classify::classify_paths(&repo, cfg, &paths);
+        compared += 1;
+        let mut lost = Vec::new();
+        let mut gained = false;
+        for c in &classes {
+            let Some(&o_sel) = old.get(c) else { continue };
+            compared_classes.insert(c.clone());
+            let n_sel = new.classes.get(c).copied().unwrap_or(true);
+            if o_sel && !n_sel {
+                lost.push(c.clone());
+            } else if n_sel && !o_sel {
+                gained = true;
+            }
+        }
+        if !lost.is_empty() {
+            narrower.push(json!({"commit": commit, "lost": lost, "paths": paths.iter().take(20).collect::<Vec<_>>()}));
+        } else if gained {
+            wider += 1;
+        } else {
+            identical += 1;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    let uncompared: Vec<&String> = classes.difference(&compared_classes).collect();
+    let refused = compared == 0 || compared_classes.is_empty();
+    if o.format == "json" {
+        let out = json!({
+            "schema": crate::EQUIVALENCE_SCHEMA,
+            "ref": o.refspec,
+            "commits": commits.len(),
+            "compared": compared,
+            "identical": identical,
+            "wider": wider,
+            "narrower": narrower,
+            "errors": errors,
+            "classes_compared": compared_classes,
+            "classes_uncompared": uncompared,
+            "refused": refused,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else {
+        for n in &narrower {
+            println!(
+                "  NARROWER {} lost {}",
+                n["commit"].as_str().unwrap_or(""),
+                n["lost"]
+            );
+        }
+        for e in &errors {
+            println!(
+                "  ERROR {} {}",
+                e["commit"].as_str().unwrap_or(""),
+                e["error"].as_str().unwrap_or("")
+            );
+        }
+        println!(
+            "  {} commit(s), {} compared: {} identical, {} wider, {} narrower, {} error(s); classes compared {:?}, uncompared {:?}",
+            commits.len(),
+            compared,
+            identical,
+            wider,
+            narrower.len(),
+            errors.len(),
+            compared_classes,
+            uncompared
+        );
+    }
+    if refused {
+        ExitCode::from(3)
+    } else if !narrower.is_empty() || !errors.is_empty() {
+        // An error leaves a commit uncompared: not a pass.
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
