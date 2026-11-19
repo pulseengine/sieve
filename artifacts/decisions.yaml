@@ -139,3 +139,60 @@ artifacts:
         under REQ-024.
     links:
       - {type: satisfies, target: REQ-024}
+
+  - id: DD-007
+    type: design-decision
+    title: List files from the index whenever the tree is a git repository
+    status: implemented
+    release: v0.2.0
+    fields:
+      decision: >
+        The docs rule needs the repository's file list. In --paths,
+        --paths-file and GATE_PROBE_FILES modes sieve now reads the index
+        in-process (gix, no git call) whenever .git exists, and walks the
+        tree only without .git or when the index cannot be read; the walk
+        lists a superset, so the fallback can only widen.
+      rationale: >
+        Measured 2026-11-19 (release build, macOS): a diff of every tracked
+        .md file took 13.47 s on kiln because the walk read 854 MB in 34,437
+        files, almost all untracked agent worktrees, mutants.out and
+        .rivet/repos; with the index it takes 1.26 s. Single-path classify
+        on gale (1,351 files), kiln (1,454), spar (3,099) and witness (288):
+        0.07 to 1.32 s. The reference's docs grep took 50 s for 1,200 .md
+        files. gale equivalence after the change: 400/400 identical.
+    links:
+      - {type: satisfies, target: REQ-018}
+      - {type: satisfies, target: REQ-010}
+
+  - id: DD-008
+    type: design-decision
+    title: Do not embed bazel-diff or target-determinator; Bazel stays on literal srcs and snapshots
+    status: implemented
+    release: v0.2.0
+    fields:
+      decision: >
+        sieve does not call bazel-diff or target-determinator. Bazel classes
+        keep literal srcs/hdrs/data with in-repo deps followed, or a committed
+        `bazel query` snapshot with a fingerprint; BUILD, .bzl and MODULE
+        changes select everything. A consumer that wants a computed affected
+        set can run either tool in its own job and commit or pass the result
+        as a snapshot.
+      rationale: >
+        Read from both READMEs on 2026-11-19. bazel-diff (native binary)
+        runs `bazel query` per revision via generate-hashes, needs Bazel 8+,
+        and states completeness limits ("Absence from this file cannot
+        exclude a job"; a changed file missing from the modified list is
+        missed). target-determinator (Go) runs `bazel cquery`, may check out
+        the repository itself, and filters incompatible targets by default.
+        Both make classification depend on a working Bazel install and a
+        workspace fetch at run time, which conflicts with the owner's
+        one-binary, no-subprocess direction and with
+        rules_wasm_component's finding that most of its inputs are Bazel
+        files that select everything anyway.
+      alternatives: >
+        Embed bazel-diff's partial-graph mode (no Bazel at run time): not
+        evaluated on a real repository yet; it would be a new dependency
+        whose completeness rules sieve would have to re-prove with its own
+        controls.
+    links:
+      - {type: satisfies, target: REQ-022}

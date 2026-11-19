@@ -51,11 +51,11 @@ check.
 - any internal failure: the reason starts with `internal:` and a GitHub
   `::warning::` is printed.
 
-Without git (`--paths`, `--paths-file`, `GATE_PROBE_FILES`, `graph`) sieve
-walks the tree instead of `git ls-files`, so the docs rule also reads
-untracked and gitignored files (a `__pycache__/*.pyc`, a build output). That
-can only select more, never less, but on a dev machine it can over-select
-where CI would not.
+With `--paths`, `--paths-file` or `GATE_PROBE_FILES` sieve makes no git call.
+When the tree is a git repository it still lists files from the index (read
+in-process), so untracked residue (agent worktrees, build logs, bytecode) is
+not read. Only when there is no `.git` does it walk the tree, and then the docs
+rule also reads untracked files; that can only select more, never less.
 
 A path with a control character, `..`, `.` or an empty component is malformed
 and selects everything; log lines escape `%`, CR and LF so a path cannot forge
@@ -88,6 +88,39 @@ bazel_build = ["proofs/BUILD.bazel"]   # literal srcs only
 hand = ["proofs/"]               # HAND-MAINTAINED; `sieve graph` labels these "hand"
 true_inputs = ["proofs/sem.v"]   # check-graph: each must select this class via the graph
 ```
+
+## Switching a repository over
+
+Before a repository's workflows read sieve instead of their current change
+detector, compare the two on the repository's own history:
+
+```sh
+sieve equivalence --config sieve.toml --old python3 --old-arg tools/ci/classify-changes.py \
+  --ref origin/main --commits 400 [--map old_output=class]...
+```
+
+For each of the last 400 first-parent commits it runs the old detector with
+`GATE_PROBE_FILES` set to that commit's diff, classifies the same paths with
+sieve, and compares class by class. Exit 0 means no commit selects less under
+sieve and every commit was compared; any narrowing or a failed run of the old
+detector exits 1. On gale's history against its Python reference: 400/400
+identical.
+
+## Counting observed misses
+
+On main (or every Nth merge-queue run), where every job runs anyway, keep
+sieve's verdict for the commit's own diff and compare it with what failed:
+
+```sh
+sieve classify --config sieve.toml --event pull_request --base HEAD~1 --head HEAD --format json > verdict.json
+# after the other jobs: their conclusions, e.g. from the API's
+# /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+sieve observe --config sieve.toml --verdict verdict.json --results jobs.json
+```
+
+Each job that failed while sieve selected none of its classes
+(`[workflows.job_outputs]`) is an observed miss, and `observe` exits 1. It is
+a field oracle beside plant's planted controls.
 
 ## Verification
 

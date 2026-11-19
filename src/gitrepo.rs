@@ -60,3 +60,37 @@ pub fn index_paths(root: &Path) -> Result<Vec<String>, String> {
     out.dedup();
     Ok(out)
 }
+
+/// The last `n` first-parent commits reachable from `refspec`, newest first,
+/// each with its first parent. A root commit (no parent) is left out.
+pub fn first_parent_commits(
+    root: &Path,
+    refspec: &str,
+    n: usize,
+) -> Result<Vec<(String, String)>, String> {
+    let repo = open(root)?;
+    let tip = repo
+        .rev_parse_single(refspec)
+        .map_err(|e| format!("resolve {refspec}: {e}"))?
+        .object()
+        .map_err(|e| format!("read {refspec}: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("{refspec} is not a commit: {e}"))?
+        .id;
+    let walk = repo
+        .rev_walk([tip])
+        .first_parent_only()
+        .all()
+        .map_err(|e| format!("walk {refspec}: {e}"))?;
+    let mut out = Vec::new();
+    for info in walk {
+        let info = info.map_err(|e| format!("walk {refspec}: {e}"))?;
+        if let Some(parent) = info.parent_ids().next() {
+            out.push((info.id.to_string(), parent.to_string()));
+        }
+        if out.len() >= n {
+            break;
+        }
+    }
+    Ok(out)
+}

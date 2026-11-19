@@ -281,3 +281,42 @@ fn an_unreadable_index_refuses_check_graph_instead_of_checking_nothing() {
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["refused"][0]["control"], "graph-inputs", "{v}");
 }
+
+// rivet: verifies REQ-010
+// rivet: verifies REQ-018
+#[test]
+fn paths_mode_reads_the_index_when_there_is_one_and_walks_only_without_git() {
+    let d = tree("index-first");
+    let git = |args: &[&str]| {
+        let o = Command::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&d)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "x"]);
+    // Untracked residue that names the doc (an agent log, bytecode, ...).
+    fs::write(d.join("untracked-notes.txt"), "see README.md").unwrap();
+    let (_, v, _) = classify(&d, &["README.md"], &[]);
+    assert_eq!(
+        v["run_all"], false,
+        "with a repository, untracked files are not read: {v}"
+    );
+    fs::remove_dir_all(d.join(".git")).unwrap();
+    let (_, v, _) = classify(&d, &["README.md"], &[]);
+    assert_eq!(
+        v["run_all"], true,
+        "without .git the walk reads it and the doc is not docs-only: {v}"
+    );
+}

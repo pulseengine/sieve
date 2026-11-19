@@ -4,9 +4,11 @@
 mod check;
 mod classify;
 mod config;
+mod equivalence;
 mod gitrepo;
 mod graph;
 mod lex;
+mod observe;
 mod repo;
 mod workflows;
 
@@ -23,6 +25,8 @@ pub const GRAPH_SCHEMA: &str = "sieve.graph.v1";
 pub const CHECK_SCHEMA: &str = "sieve.check.v1";
 pub const WORKFLOWS_SCHEMA: &str = "sieve.workflows.v1";
 pub const CONFIG_SCHEMA: &str = "sieve.config.v1";
+pub const EQUIVALENCE_SCHEMA: &str = "sieve.equivalence.v1";
+pub const OBSERVE_SCHEMA: &str = "sieve.observe.v1";
 
 const USAGE: &str = "\
 sieve: which heavy CI jobs does a change touch? When unsure, everything runs.
@@ -36,6 +40,11 @@ USAGE:
                     [--depinfo <class>=<file.d>]... [--format json|text]
   sieve check-workflows --config <sieve.toml> [--root <dir>] [--workflows <dir>]
                         [--required <file>] [--format json|text]
+  sieve equivalence --config <sieve.toml> --old <detector> [--old-arg <a>]...
+                    [--ref <rev> (origin/main)] [--commits <n> (400)]
+                    [--map <old-output>=<class>]... [--format json|text]
+  sieve observe --config <sieve.toml> --verdict <classify.json> --results <jobs.json>
+                [--format json|text]
   sieve --version | --help
 
 classify: exit 0 with a verdict (run_all included); exit 2 on a usage or
@@ -59,6 +68,16 @@ paths/paths-ignore key, no branch or types restriction, and on merge_group; (b)
 its job is skipped only through the classifier (a step running `sieve classify
 ... --format github-output`), reading only the outputs the HAND-MAINTAINED
 [workflows.job_outputs] map gives it; (c) the classifier fails open.
+equivalence: the switch-over gate. For each of the last N first-parent
+  commits of --ref, runs the old detector with GATE_PROBE_FILES=<its diff>
+  and GITHUB_OUTPUT=<file>, classifies the same paths with sieve, and
+  compares class by class. Exit 0 none narrower and no error, 1 a narrowing
+  or an uncompared commit, 2 usage, 3 refused (nothing compared).
+observe: the observed-miss counter. Given sieve's verdict for a commit and the
+  job conclusions of a run where every job ran ([{name, conclusion}] or the
+  API's {jobs: [...]}), lists each job that failed while all its classes
+  ([workflows.job_outputs]) were false. Exit 0 none, 1 a miss, 2 usage,
+  3 refused (unreadable input or no gated job).
 ";
 
 struct Args {
@@ -76,6 +95,13 @@ struct Args {
     workflows: Option<String>,
     required: Option<String>,
     explain: bool,
+    old: Option<String>,
+    old_args: Vec<String>,
+    refspec: Option<String>,
+    commits: Option<String>,
+    map: Vec<String>,
+    verdict: Option<String>,
+    results: Option<String>,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -96,6 +122,13 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         workflows: None,
         required: None,
         explain: false,
+        old: None,
+        old_args: vec![],
+        refspec: None,
+        commits: None,
+        map: vec![],
+        verdict: None,
+        results: None,
     };
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -110,6 +143,13 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--control" => a.controls.push(val("--control")?),
             "--depinfo" => a.depinfo.push(val("--depinfo")?),
             "--explain" => a.explain = true,
+            "--old" => a.old = Some(val("--old")?),
+            "--old-arg" => a.old_args.push(val("--old-arg")?),
+            "--ref" => a.refspec = Some(val("--ref")?),
+            "--commits" => a.commits = Some(val("--commits")?),
+            "--map" => a.map.push(val("--map")?),
+            "--verdict" => a.verdict = Some(val("--verdict")?),
+            "--results" => a.results = Some(val("--results")?),
             "--workflows" => a.workflows = Some(val("--workflows")?),
             "--required" => a.required = Some(val("--required")?),
             "--paths" => {
@@ -128,7 +168,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 fn version() -> String {
     format!(
-        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {WORKFLOWS_SCHEMA} {CONFIG_SCHEMA}",
+        "sieve {}\nschemas: {CLASSIFY_SCHEMA} {GRAPH_SCHEMA} {CHECK_SCHEMA} {WORKFLOWS_SCHEMA} {EQUIVALENCE_SCHEMA} {OBSERVE_SCHEMA} {CONFIG_SCHEMA}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -155,7 +195,16 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
-    if !["classify", "graph", "check-graph", "check-workflows"].contains(&argv[0].as_str()) {
+    if ![
+        "classify",
+        "graph",
+        "check-graph",
+        "check-workflows",
+        "equivalence",
+        "observe",
+    ]
+    .contains(&argv[0].as_str())
+    {
         return usage_error(&format!("unknown command `{}`", argv[0]));
     }
     let a = match parse_args(&argv) {
@@ -200,6 +249,41 @@ fn main() -> ExitCode {
             a.required.as_deref(),
             a.format.as_deref(),
             root,
+            &cfg,
+        ),
+        "equivalence" => {
+            let Some(old) = a.old.clone() else {
+                return usage_error("equivalence needs --old <detector>");
+            };
+            let commits = match a.commits.as_deref().unwrap_or("400").parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => return usage_error("--commits takes a positive number"),
+            };
+            let mut map = std::collections::BTreeMap::new();
+            for m in &a.map {
+                let Some((o, n)) = m.split_once('=') else {
+                    return usage_error("--map takes <old-output>=<class>");
+                };
+                map.insert(o.to_string(), n.to_string());
+            }
+            let format = a.format.clone().unwrap_or_else(|| "text".into());
+            if !["json", "text"].contains(&format.as_str()) {
+                return usage_error(&format!("unknown --format `{format}`"));
+            }
+            let opts = equivalence::Opts {
+                old,
+                old_args: a.old_args.clone(),
+                refspec: a.refspec.clone().unwrap_or_else(|| "origin/main".into()),
+                commits,
+                map,
+                format,
+            };
+            equivalence::cmd(&opts, root, &cfg)
+        }
+        "observe" => observe::cmd(
+            a.verdict.as_deref(),
+            a.results.as_deref(),
+            a.format.as_deref(),
             &cfg,
         ),
         other => usage_error(&format!("unknown command `{other}`")),
