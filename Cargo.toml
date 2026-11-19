@@ -15,7 +15,8 @@ regex = "1"
 serde_json = "1"
 sha2 = "0.10"
 toml = "0.8"
-yaml-rust2 = "0.13"
+# rivet's own YAML (owner: a git dependency until upstream rowan is sound)
+rivet-yaml = { git = "https://github.com/pulseengine/rivet", tag = "v0.42.2" }
 
 [profile.release]
 lto = true
