@@ -292,3 +292,56 @@ fn a_narrowing_can_be_accepted_under_a_path_prefix_only() {
     let (code, _) = run(&d, &c, &old, &args);
     assert_eq!(code, Some(2));
 }
+
+// rivet: verifies REQ-013
+#[test]
+fn inert_paths_do_not_block_a_prefix_acceptance_but_cannot_satisfy_it_alone() {
+    let d = history("accept-prefix-inert");
+    fs::create_dir_all(d.join("art")).unwrap();
+    // a/ plus an inert file: b's loss is accepted under b:a/
+    fs::write(d.join("a/x"), "3").unwrap();
+    fs::write(d.join("art/req.yaml"), "1").unwrap();
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-q", "-m", "a and inert"]);
+    // only an inert file: nothing live under a/, so nothing is accepted
+    fs::write(d.join("art/req.yaml"), "2").unwrap();
+    git(&d, &["commit", "-q", "-am", "inert only"]);
+    let c = d.parent().unwrap().join("accept-prefix-inert.sieve.toml");
+    fs::write(
+        &c,
+        "[inert]\nprefixes = [\"art/\"]\n[class.a]\nhand = [\"a/\"]\n[class.b]\nhand = [\"b/\"]\n",
+    )
+    .unwrap();
+    let old = script(&d, "code.sh", "echo 'code=true' >> \"$GITHUB_OUTPUT\"");
+    let (_, v) = run(
+        &d,
+        &c,
+        &old,
+        &[
+            "--map",
+            "code=a",
+            "--map",
+            "code=b",
+            "--accept-narrowing",
+            "b:a/",
+        ],
+    );
+    let accepted: Vec<serde_json::Value> = v["accepted_narrowings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["paths"].clone())
+        .collect();
+    assert!(
+        accepted.contains(&serde_json::json!(["a/x"])),
+        "the a/-only commit: {v}"
+    );
+    assert!(
+        accepted.contains(&serde_json::json!(["a/x", "art/req.yaml"])),
+        "a/ plus an inert path: {v}"
+    );
+    assert!(
+        !accepted.contains(&serde_json::json!(["art/req.yaml"])),
+        "inert-only must not be accepted: {v}"
+    );
+}

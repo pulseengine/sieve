@@ -77,7 +77,8 @@ equivalence: the switch-over gate. For each of the last N first-parent
   --map may repeat an old output to map it to several classes.
   --accept-narrowing <class> declares that class's narrowing intended: it is
   listed (ACCEPTED-NARROWER) but does not fail the gate. <class>:<prefix>
-  accepts it only on a commit whose every changed path starts with <prefix>.
+  accepts it only on a commit whose every changed non-inert path starts
+  with <prefix> (and that changed at least one non-inert path).
 observe: the observed-miss counter. Given sieve's verdict for a commit and the
   job conclusions of a run where every job ran ([{name, conclusion}] or the
   API's {jobs: [...]}), lists each job that failed while all its classes

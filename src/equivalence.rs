@@ -163,11 +163,19 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
                 gained = true;
             }
         }
+        // An inert path selects no class (inert AND claimed runs everything),
+        // so it cannot cause a narrowing: the prefix test sees the other
+        // paths, and there must be at least one.
+        let live: Vec<&String> = paths
+            .iter()
+            .filter(|x| !classify::is_inert(cfg, x))
+            .collect();
         let (ok_lost, bad_lost): (Vec<String>, Vec<String>) = lost.into_iter().partition(|c| {
             o.accept_narrowing.get(c).is_some_and(|prefixes| {
-                prefixes
-                    .iter()
-                    .any(|p| paths.iter().all(|x| x.starts_with(p.as_str())))
+                prefixes.iter().any(|p| {
+                    p.is_empty()
+                        || (!live.is_empty() && live.iter().all(|x| x.starts_with(p.as_str())))
+                })
             })
         });
         if !ok_lost.is_empty() {
