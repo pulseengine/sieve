@@ -237,7 +237,7 @@ pub fn cmd_check_graph(
                         let stale = g[&class.name]
                             .unresolved
                             .iter()
-                            .any(|u| u.contains("fingerprint is stale"));
+                            .any(|u| u.code == "bazel-snapshot-stale");
                         r.expect(c, !stale, "bazel-snapshot-stale", || {
                             format!(
                                 "{}: the Bazel snapshot is stale; regenerate and commit it",

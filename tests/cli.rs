@@ -180,3 +180,57 @@ fn toolchain_pins_dep_info_cannot_see_run_everything() {
         assert_eq!(v["run_all"], true, "{p} must select everything");
     }
 }
+
+// rivet: verifies FEAT-004
+// rivet: verifies REQ-021
+#[test]
+fn an_unresolved_input_is_in_the_json_with_a_code() {
+    let d = tree("unresolved-json");
+    fs::write(
+        d.join("a/src/lib.rs"),
+        "include!(concat!(env!(\"SOMEWHERE\"), \"/x.rs\"));\n",
+    )
+    .unwrap();
+    let (code, v, _) = classify(&d, &["README.md"], &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(v["classes"]["a"], true, "an unresolved class always runs");
+    let u = &v["unresolved"]["a"][0];
+    assert_eq!(u["code"], "include-unresolved", "{v}");
+    assert!(u["input"].as_str().unwrap().contains("a/src/lib.rs"), "{u}");
+    assert!(v.get("explain").is_none(), "explain only with --explain");
+}
+
+// rivet: verifies REQ-020
+#[test]
+fn explain_names_the_path_the_claim_and_the_edge() {
+    let d = tree("explain");
+    let o = Command::new(BIN)
+        .args([
+            "classify",
+            "--config",
+            "sieve.toml",
+            "--explain",
+            "--paths",
+            "a/src/lib.rs",
+        ])
+        .current_dir(&d)
+        .env_remove("GATE_PROBE_FILES")
+        .env_remove("SIEVE_FAULT")
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let e = &v["explain"]["a"][0];
+    assert_eq!(e["path"], "a/src/lib.rs", "{v}");
+    assert_eq!(e["claim"], "a/");
+    assert_eq!(e["via"], "cargo");
+    assert!(
+        v["explain"].get("b").is_none(),
+        "class b was not selected: {v}"
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("explain a: a/src/lib.rs via cargo (claim a/)"),
+        "{stderr}"
+    );
+}

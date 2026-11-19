@@ -318,7 +318,7 @@ artifacts:
   - id: REQ-020
     type: requirement
     title: Explain every selection and every skip in the classify output
-    status: draft
+    status: verified
     description: >
       `sieve classify --explain` reports, per class, the changed path that
       selected it and the edge kind (cargo, path-attr, include, wit,
@@ -326,14 +326,17 @@ artifacts:
       for an unresolved class the unresolved input, so a skip is reviewable
       in the PR log. Survey input (Nx).
     release: v0.2.0
-    fields: {priority: should, category: interface}
+    fields:
+      priority: should
+      category: interface
+      review: author-verified only (tests/cli.rs); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-005}
 
   - id: REQ-021
     type: requirement
     title: Report unresolved inputs in the JSON verdict with a reason code
-    status: draft
+    status: verified
     description: >
       When the derivation knows it cannot see an input (glob, variable,
       @external label, unresolvable include, non-literal generate! path,
@@ -341,7 +344,10 @@ artifacts:
       stable code, not only stderr. The class keeps running and a graph
       refusal keeps selecting everything, as today.
     release: v0.2.0
-    fields: {priority: should, category: interface}
+    fields:
+      priority: should
+      category: interface
+      review: author-verified only (tests/cli.rs); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-003}
 
@@ -475,3 +481,18 @@ artifacts:
     links:
       - {type: satisfies, target: REQ-016}
       - {type: satisfies, target: REQ-017}
+
+  - id: FEAT-004
+    type: feature
+    title: classify --explain and coded unresolved inputs
+    status: verified
+    release: v0.2.0
+    description: >
+      Per selected class, the changed path, the claim and the edge that
+      selected it; per unresolved class, the input and a stable code.
+    fields:
+      phase: phase-2
+      review: "author-verified only (tests/cli.rs); no independent review yet"
+    links:
+      - {type: satisfies, target: REQ-020}
+      - {type: satisfies, target: REQ-021}

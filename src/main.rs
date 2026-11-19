@@ -30,7 +30,7 @@ sieve: which heavy CI jobs does a change touch? When unsure, everything runs.
 USAGE:
   sieve classify --config <sieve.toml> [--root <dir>]
                  (--base <sha> [--head <sha>] | --paths-file <file> | --paths <p>...)
-                 [--event <name>] [--format json|github-output]
+                 [--event <name>] [--format json|github-output] [--explain]
   sieve graph --config <sieve.toml> [--root <dir>] [--format json]
   sieve check-graph --config <sieve.toml> [--root <dir>] [--control <name>]...
                     [--depinfo <class>=<file.d>]... [--format json|text]
@@ -43,6 +43,9 @@ config error. Every failure selects everything; nothing selects nothing.
   git mode (--base): event must be pull_request, else everything runs.
   --paths / --paths-file: classified as a pull_request, no git call made.
   GATE_PROBE_FILES=<file>: the changed paths, replacing event and diff.
+  --explain: per class, the changed path that selected it, the claim it
+  matched and the edge it came from (cargo, include, literal, bazel, ...),
+  or its unresolved input; on stderr, and as `explain` in the JSON.
   --format github-output appends <class>=true|false and run_all=... to
   $GITHUB_OUTPUT (stdout if unset). Wire jobs with
     !cancelled() && (needs.C.result != 'success' || needs.C.outputs.<o> != 'false')
@@ -72,6 +75,7 @@ struct Args {
     depinfo: Vec<String>,
     workflows: Option<String>,
     required: Option<String>,
+    explain: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -91,6 +95,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         depinfo: vec![],
         workflows: None,
         required: None,
+        explain: false,
     };
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -104,6 +109,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--format" => a.format = Some(val("--format")?),
             "--control" => a.controls.push(val("--control")?),
             "--depinfo" => a.depinfo.push(val("--depinfo")?),
+            "--explain" => a.explain = true,
             "--workflows" => a.workflows = Some(val("--workflows")?),
             "--required" => a.required = Some(val("--required")?),
             "--paths" => {
@@ -286,7 +292,7 @@ fn cmd_classify(a: &Args, root: PathBuf, cfg: &Config) -> ExitCode {
             Verdict::all(cfg, format!("internal: classifier crashed: {msg}"))
         }
     };
-    emit(&v, format)
+    emit(&v, format, a.explain)
 }
 
 /// Escape a string for a log line, so a path cannot start or end a GitHub
@@ -297,7 +303,7 @@ fn esc(s: &str) -> String {
         .replace('\n', "%0A")
 }
 
-fn emit(v: &Verdict, format: &str) -> ExitCode {
+fn emit(v: &Verdict, format: &str, explain: bool) -> ExitCode {
     let reason = esc(v.reason.as_deref().unwrap_or_default());
     eprintln!(
         "sieve: {}",
@@ -312,6 +318,27 @@ fn emit(v: &Verdict, format: &str) -> ExitCode {
     }
     for u in &v.unknown_paths {
         eprintln!("  unknown: {}", esc(u));
+    }
+    if explain {
+        for (class, why) in &v.explain {
+            for w in why {
+                let line = match (w.get("path"), w.get("unresolved")) {
+                    (Some(p), _) => format!(
+                        "{} via {} (claim {})",
+                        p.as_str().unwrap_or(""),
+                        w["via"].as_str().unwrap_or(""),
+                        w["claim"].as_str().unwrap_or("")
+                    ),
+                    (_, Some(u)) => format!(
+                        "unresolved {}: {}",
+                        u["code"].as_str().unwrap_or(""),
+                        u["input"].as_str().unwrap_or("")
+                    ),
+                    _ => continue,
+                };
+                eprintln!("  explain {class}: {}", esc(&line));
+            }
+        }
     }
     let warning = v.warn.then(|| {
         format!(
@@ -351,14 +378,18 @@ fn emit(v: &Verdict, format: &str) -> ExitCode {
         if let Some(w) = &warning {
             eprintln!("{w}");
         }
-        let out = json!({
+        let mut out = json!({
             "schema": CLASSIFY_SCHEMA,
             "run_all": v.run_all,
             "reason": v.reason,
             "classes": v.classes,
             "unknown_paths": v.unknown_paths,
             "inputs_hash": v.inputs_hash,
+            "unresolved": v.unresolved,
         });
+        if explain {
+            out["explain"] = json!(v.explain);
+        }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     }
     ExitCode::SUCCESS
@@ -381,7 +412,7 @@ fn cmd_graph(a: &Args, root: PathBuf, cfg: &Config) -> ExitCode {
                         json!({
                             "files": cg.claims.keys().collect::<Vec<_>>(),
                             "sources": cg.claims,
-                            "unresolved": cg.unresolved,
+                            "unresolved": cg.unresolved.iter().map(|u| u.json()).collect::<Vec<_>>(),
                         }),
                     )
                 })
