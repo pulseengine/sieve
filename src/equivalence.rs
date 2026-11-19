@@ -29,26 +29,21 @@ pub struct Opts {
 /// `create_dir` (fails if the name exists) under an unpredictable name, mode
 /// 0700 on unix, so no file in it can be pre-planted or symlinked.
 fn private_dir() -> std::io::Result<PathBuf> {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::hash::{BuildHasher, Hasher};
     let base = std::env::temp_dir();
     for attempt in 0..16u32 {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let d = base.join(format!(
-            "sieve-equivalence-{}-{nanos:x}-{attempt}",
-            std::process::id()
-        ));
-        match std::fs::create_dir(&d) {
-            Ok(()) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
-                }
-                return Ok(d);
-            }
+        // std's RandomState draws fresh random keys: an unpredictable name.
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u32(attempt);
+        let d = base.join(format!("sieve-equivalence-{:016x}", h.finish()));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700); // set at creation: no window with wider permissions
+        }
+        match b.create(&d) {
+            Ok(()) => return Ok(d),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
