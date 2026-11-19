@@ -394,9 +394,12 @@ artifacts:
     description: >
       Owner direction (2026-11-18). classify and graph read the repository
       in-process through gix (merge-base, tree diff, index) instead of the
-      git command line. Cargo manifests are parsed with cargo's own schema
-      types (cargo-util-schemas) where they fit; target discovery stays
-      sieve's own, corpus-tested. The cargo-metadata cross-check stays an
+      git command line. cargo's own schema types (cargo-util-schemas) were
+      evaluated on 2026-11-19 and not adopted: they would give typed parsing
+      only, while target discovery, workspace inheritance and the source
+      scans (where selection behaviour lives) stay sieve's own and
+      corpus-tested, and a manifest sieve cannot read already selects
+      everything. The cargo-metadata cross-check stays an
       optional check-graph control that reports refused when cargo is
       absent: the cargo crate itself pulls libgit2, curl and openssl and
       would break the single binary and the WASI component.

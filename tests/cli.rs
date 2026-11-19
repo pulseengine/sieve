@@ -234,3 +234,50 @@ fn explain_names_the_path_the_claim_and_the_edge() {
         "{stderr}"
     );
 }
+
+// rivet: verifies REQ-009
+#[test]
+fn an_unreadable_index_refuses_check_graph_instead_of_checking_nothing() {
+    let d = tree("bad-index");
+    let git = |args: &[&str]| {
+        let o = Command::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&d)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "x"]);
+    fs::write(d.join(".git/index"), "garbage").unwrap();
+    let o = Command::new(BIN)
+        .args([
+            "check-graph",
+            "--config",
+            "sieve.toml",
+            "--control",
+            "graph-inputs",
+            "--format",
+            "json",
+        ])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["refused"][0]["control"], "graph-inputs", "{v}");
+}
