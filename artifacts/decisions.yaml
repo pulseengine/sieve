@@ -168,7 +168,7 @@ artifacts:
     type: design-decision
     title: Do not embed bazel-diff or target-determinator; Bazel stays on literal srcs and snapshots
     status: implemented
-    release: v0.2.0
+    release: v0.3.0
     fields:
       decision: >
         sieve does not call bazel-diff or target-determinator. Bazel classes

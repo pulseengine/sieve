@@ -82,3 +82,22 @@ pulseengine/sieve#3. Layer entry proposed in pulseengine-layers #64.
 - REQ-019 observed-miss counter, REQ-020 classify --explain, REQ-021
   unresolved inputs in the JSON, REQ-022 bazel-diff evaluation, REQ-013
   equivalence gate as a tool, REQ-015 plant's oracle, REQ-018 speed.
+
+## v0.2.0 (2026-11-19)
+
+Scope (`rivet release status v0.2.0`: cuttable): REQ-013 `sieve equivalence`,
+REQ-018 index-first file listing, REQ-019 `sieve observe`, REQ-020/021
+`--explain` and coded unresolved inputs, REQ-024 gix (no subprocess),
+REQ-015 accepted on plant#17. Moved to v0.3.0: REQ-025 rivet-yaml (waits for
+rivet v0.43.0 with rivet#1289), REQ-022 bazel-diff evaluated on a real
+repository (owner: evaluate for real).
+
+Evidence at tag time:
+- classifier corpus 74/74 with an empty PATH (no subprocess); 6 cold-review
+  regressions; a second cold review of the gix layer: 0 narrowing cases;
+- gale, last 400 first-parent commits: v0.1.0 (git CLI) vs v0.2.0 (gix)
+  400/400 identical in git mode; `sieve equivalence` against gale's Python
+  reference 400/400 identical; negative control narrower on 2 of 30;
+- classify time on gale, kiln, spar, witness: 0.07 to 1.32 s (release build);
+  kiln all-.md diff 13.47 s before, 1.26 s after;
+- cost: stripped macOS arm64 binary 2.37 MB (v0.1.0) to 5.01 MB.
