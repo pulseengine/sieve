@@ -249,7 +249,7 @@ artifacts:
   - id: REQ-015
     type: requirement
     title: Keep the false-skip oracle independent of sieve
-    status: implemented
+    status: accepted
     description: >
       sieve's own tests do not count as the false-skip control. plant hosts
       the controls, with an oracle built from rustc dep-info and hand-named
@@ -258,7 +258,7 @@ artifacts:
     fields:
       priority: must
       category: constraint
-      review: "evidence is in plant, not here: pulseengine/plant#17 (merged 450d978, 2026-11-18) checks sieve v0.1.0 with six planted false-skip controls whose true inputs come from rustc dep-info, not from sieve graph; held at implemented because the criterion belongs to plant"
+      review: "evidence is in plant, not here: pulseengine/plant#17 (merged 450d978, 2026-11-18) checks sieve v0.1.0 with six planted false-skip controls whose true inputs come from rustc dep-info, not from sieve graph; criterion belongs to plant; accepted for v0.2.0 on that evidence by the owner (option dialogue, 2026-11-19)"
     links:
       - {type: constraint-satisfies, target: SC-005}
 
@@ -373,7 +373,7 @@ artifacts:
       synth, sigil). Keep the fail-open rules on top: a BUILD, .bzl or
       MODULE change still selects everything (bazel-diff documents its
       possible-readers output as incomplete).
-    release: v0.2.0
+    release: v0.3.0
     fields: {priority: could, category: functional}
     links:
       - {type: constraint-satisfies, target: SC-006}
@@ -423,7 +423,7 @@ artifacts:
     type: requirement
     title: Parse configuration and workflow YAML with rivet-yaml
     status: draft
-    release: v0.2.0
+    release: v0.3.0
     description: >
       Owner direction (2026-11-18). check-workflows and any YAML config use
       rivet-yaml (rivet's lossless rowan YAML crate; YAML 1.2 core, so `on:`
