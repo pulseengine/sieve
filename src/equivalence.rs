@@ -20,8 +20,10 @@ pub struct Opts {
     pub old_args: Vec<String>,
     pub refspec: String,
     pub commits: usize,
-    /// old output name -> sieve class
-    pub map: BTreeMap<String, String>,
+    /// old output name -> the sieve classes it stands for (one-to-many)
+    pub map: BTreeMap<String, Vec<String>>,
+    /// classes whose narrowing is intended: reported, not failing
+    pub accept_narrowing: BTreeSet<String>,
     pub format: String,
 }
 
@@ -78,12 +80,17 @@ fn run_old(
     let mut m = BTreeMap::new();
     for line in text.lines() {
         if let Some((k, v)) = line.split_once('=') {
-            let k = o
-                .map
-                .get(k.trim())
-                .cloned()
-                .unwrap_or_else(|| k.trim().to_string());
-            m.insert(k, v.trim() == "true");
+            let sel = v.trim() == "true";
+            match o.map.get(k.trim()) {
+                Some(classes) => {
+                    for c in classes {
+                        m.insert(c.clone(), sel);
+                    }
+                }
+                None => {
+                    m.insert(k.trim().to_string(), sel);
+                }
+            }
         }
     }
     Ok(m)
@@ -112,12 +119,18 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
     let classes: BTreeSet<String> = cfg.classes.iter().map(|c| c.name.clone()).collect();
     let (mut identical, mut wider, mut errors) = (0usize, 0usize, Vec::new());
     let mut narrower: Vec<serde_json::Value> = Vec::new();
+    let mut accepted: Vec<serde_json::Value> = Vec::new();
+    let mut skipped: Vec<serde_json::Value> = Vec::new();
     let mut compared_classes: BTreeSet<String> = BTreeSet::new();
     let mut compared = 0usize;
     for (commit, parent) in &commits {
         let paths = match gitrepo::diff_names(&root, parent, commit) {
             Ok(p) if !p.is_empty() => p,
-            Ok(_) => continue, // an empty commit: both sides run everything
+            Ok(_) => {
+                // an empty commit: both sides run everything
+                skipped.push(json!({"commit": commit, "reason": "empty diff"}));
+                continue;
+            }
             Err(e) => {
                 errors.push(json!({"commit": commit, "error": e}));
                 continue;
@@ -148,8 +161,16 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
                 gained = true;
             }
         }
-        if !lost.is_empty() {
-            narrower.push(json!({"commit": commit, "lost": lost, "paths": paths.iter().take(20).collect::<Vec<_>>()}));
+        let (ok_lost, bad_lost): (Vec<String>, Vec<String>) = lost
+            .into_iter()
+            .partition(|c| o.accept_narrowing.contains(c));
+        if !ok_lost.is_empty() {
+            accepted.push(json!({"commit": commit, "lost": ok_lost, "paths": paths.iter().take(20).collect::<Vec<_>>()}));
+        }
+        if !bad_lost.is_empty() {
+            narrower.push(json!({"commit": commit, "lost": bad_lost, "paths": paths.iter().take(20).collect::<Vec<_>>()}));
+        } else if !ok_lost.is_empty() {
+            // counted in accepted_narrowings
         } else if gained {
             wider += 1;
         } else {
@@ -168,6 +189,9 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
             "identical": identical,
             "wider": wider,
             "narrower": narrower,
+            "accepted_narrowings": accepted,
+            "accept_narrowing_classes": o.accept_narrowing,
+            "skipped": skipped,
             "errors": errors,
             "classes_compared": compared_classes,
             "classes_uncompared": uncompared,
@@ -182,6 +206,20 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
                 n["lost"]
             );
         }
+        for n in &accepted {
+            println!(
+                "  ACCEPTED-NARROWER {} lost {} (--accept-narrowing)",
+                n["commit"].as_str().unwrap_or(""),
+                n["lost"]
+            );
+        }
+        for k in &skipped {
+            println!(
+                "  SKIPPED {} ({})",
+                k["commit"].as_str().unwrap_or(""),
+                k["reason"].as_str().unwrap_or("")
+            );
+        }
         for e in &errors {
             println!(
                 "  ERROR {} {}",
@@ -190,12 +228,15 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
             );
         }
         println!(
-            "  {} commit(s), {} compared: {} identical, {} wider, {} narrower, {} error(s); classes compared {:?}, uncompared {:?}",
+            "  {} commit(s), {} compared, {} skipped: {} identical, {} wider, {} narrower, {} accepted narrower ({:?}), {} error(s); classes compared {:?}, uncompared {:?}",
             commits.len(),
             compared,
+            skipped.len(),
             identical,
             wider,
             narrower.len(),
+            accepted.len(),
+            o.accept_narrowing,
             errors.len(),
             compared_classes,
             uncompared

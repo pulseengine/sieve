@@ -183,3 +183,67 @@ fn an_unknown_ref_is_refused() {
         .unwrap();
     assert_eq!(o.status.code(), Some(3));
 }
+
+// rivet: verifies REQ-013
+#[test]
+fn one_old_output_maps_to_several_classes_and_an_intended_narrowing_can_be_accepted() {
+    let d = history("one-to-many");
+    let c = cfg(&d);
+    // A single-output old detector (like spar's `code`) that is true on every change.
+    let old = script(&d, "code.sh", "echo 'code=true' >> \"$GITHUB_OUTPUT\"");
+    let (code, v) = run(&d, &c, &old, &["--map", "code=a", "--map", "code=b"]);
+    assert_eq!(code, Some(1), "{v}");
+    let compared: Vec<&str> = v["classes_compared"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x.as_str())
+        .collect();
+    assert_eq!(
+        compared,
+        ["a", "b"],
+        "both mapped classes are compared: {v}"
+    );
+    // a/x drops b, b/y drops a, README drops both: all three are narrower.
+    assert_eq!(v["narrower"].as_array().unwrap().len(), 3, "{v}");
+    // Declaring both narrowings intended: listed, not failing.
+    let (code, v) = run(
+        &d,
+        &c,
+        &old,
+        &[
+            "--map",
+            "code=a",
+            "--map",
+            "code=b",
+            "--accept-narrowing",
+            "a",
+            "--accept-narrowing",
+            "b",
+        ],
+    );
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["accepted_narrowings"].as_array().unwrap().len(), 3, "{v}");
+    assert_eq!(v["narrower"].as_array().unwrap().len(), 0, "{v}");
+}
+
+// rivet: verifies REQ-013
+#[test]
+fn an_empty_commit_is_listed_as_skipped_and_an_unknown_class_is_a_usage_error() {
+    let d = history("skipped");
+    git(&d, &["commit", "-q", "--allow-empty", "-m", "empty"]);
+    let c = cfg(&d);
+    let old = script(
+        &d,
+        "self.sh",
+        &format!(
+            "exec {BIN} classify --config {} --format github-output",
+            c.display()
+        ),
+    );
+    let (code, v) = run(&d, &c, &old, &[]);
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["skipped"][0]["reason"], "empty diff", "{v}");
+    let (code, _) = run(&d, &c, &old, &["--map", "x=nope"]);
+    assert_eq!(code, Some(2));
+}

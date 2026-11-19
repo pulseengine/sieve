@@ -101,3 +101,15 @@ Evidence at tag time:
 - classify time on gale, kiln, spar, witness: 0.07 to 1.32 s (release build);
   kiln all-.md diff 13.47 s before, 1.26 s after;
 - cost: stripped macOS arm64 binary 2.37 MB (v0.1.0) to 5.01 MB.
+
+## v0.2.1 (2026-11-19)
+
+Fixes from spar's first switch-over run (`sieve equivalence`):
+- a repeated `--map old=class` kept only the last class silently; one old
+  output now maps to every class named (a class not in the config is a usage
+  error);
+- commits that could not be compared are named (`skipped`, with the reason);
+- `--accept-narrowing <class>` declares an intended narrowing: listed as
+  ACCEPTED-NARROWER, not failing.
+REQ-026 (v0.3.0) records spar's finding: a job that builds another class's
+binary (`cargo build -p X`) must claim X's inputs.

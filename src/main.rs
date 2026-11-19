@@ -42,7 +42,8 @@ USAGE:
                         [--required <file>] [--format json|text]
   sieve equivalence --config <sieve.toml> --old <detector> [--old-arg <a>]...
                     [--ref <rev> (origin/main)] [--commits <n> (400)]
-                    [--map <old-output>=<class>]... [--format json|text]
+                    [--map <old-output>=<class>]... [--accept-narrowing <class>]...
+                    [--format json|text]
   sieve observe --config <sieve.toml> --verdict <classify.json> --results <jobs.json>
                 [--format json|text]
   sieve --version | --help
@@ -73,6 +74,9 @@ equivalence: the switch-over gate. For each of the last N first-parent
   and GITHUB_OUTPUT=<file>, classifies the same paths with sieve, and
   compares class by class. Exit 0 none narrower and no error, 1 a narrowing
   or an uncompared commit, 2 usage, 3 refused (nothing compared).
+  --map may repeat an old output to map it to several classes.
+  --accept-narrowing <class> declares that class's narrowing intended: it is
+  listed (ACCEPTED-NARROWER) but does not fail the gate.
 observe: the observed-miss counter. Given sieve's verdict for a commit and the
   job conclusions of a run where every job ran ([{name, conclusion}] or the
   API's {jobs: [...]}), lists each job that failed while all its classes
@@ -100,6 +104,7 @@ struct Args {
     refspec: Option<String>,
     commits: Option<String>,
     map: Vec<String>,
+    accept_narrowing: Vec<String>,
     verdict: Option<String>,
     results: Option<String>,
 }
@@ -127,6 +132,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         refspec: None,
         commits: None,
         map: vec![],
+        accept_narrowing: vec![],
         verdict: None,
         results: None,
     };
@@ -148,6 +154,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--ref" => a.refspec = Some(val("--ref")?),
             "--commits" => a.commits = Some(val("--commits")?),
             "--map" => a.map.push(val("--map")?),
+            "--accept-narrowing" => a.accept_narrowing.push(val("--accept-narrowing")?),
             "--verdict" => a.verdict = Some(val("--verdict")?),
             "--results" => a.results = Some(val("--results")?),
             "--workflows" => a.workflows = Some(val("--workflows")?),
@@ -259,12 +266,28 @@ fn main() -> ExitCode {
                 Ok(n) if n > 0 => n,
                 _ => return usage_error("--commits takes a positive number"),
             };
-            let mut map = std::collections::BTreeMap::new();
+            // one old output may stand for several classes: --map code=a --map code=b
+            let mut map: std::collections::BTreeMap<String, Vec<String>> = Default::default();
             for m in &a.map {
                 let Some((o, n)) = m.split_once('=') else {
                     return usage_error("--map takes <old-output>=<class>");
                 };
-                map.insert(o.to_string(), n.to_string());
+                if !cfg.classes.iter().any(|c| c.name == n) {
+                    return usage_error(&format!("--map {m}: no class `{n}` in the config"));
+                }
+                let v = map.entry(o.to_string()).or_default();
+                if !v.iter().any(|x| x == n) {
+                    v.push(n.to_string());
+                }
+            }
+            let mut accept_narrowing = std::collections::BTreeSet::new();
+            for c in &a.accept_narrowing {
+                if !cfg.classes.iter().any(|x| &x.name == c) {
+                    return usage_error(&format!(
+                        "--accept-narrowing: no class `{c}` in the config"
+                    ));
+                }
+                accept_narrowing.insert(c.clone());
             }
             let format = a.format.clone().unwrap_or_else(|| "text".into());
             if !["json", "text"].contains(&format.as_str()) {
@@ -276,6 +299,7 @@ fn main() -> ExitCode {
                 refspec: a.refspec.clone().unwrap_or_else(|| "origin/main".into()),
                 commits,
                 map,
+                accept_narrowing,
                 format,
             };
             equivalence::cmd(&opts, root, &cfg)

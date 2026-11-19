@@ -437,6 +437,25 @@ artifacts:
     links:
       - {type: satisfies, target: SSC-002}
 
+  - id: REQ-026
+    type: requirement
+    title: Flag a job that builds another class's binary without claiming its inputs
+    status: draft
+    release: v0.3.0
+    description: >
+      Found by spar's switch-over (2026-11-19): spar's Lean job runs
+      `cargo build -p spar` and checks the Lean that spar generates, so a
+      Rust-only change to spar's code generation can break it. Its class
+      must therefore claim the spar package's Cargo closure; the old
+      detector's equivalence could not show this, because it ran Lean on
+      every code change. check-workflows (or a check-graph control) scans
+      each gated job's run steps for `cargo build|run|test -p X` (and
+      `--package X`, `--manifest-path`) and requires the job's classes to
+      claim X's manifest; a miss is a gate failure.
+    fields: {priority: should, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-001}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
