@@ -318,7 +318,7 @@ artifacts:
   - id: REQ-020
     type: requirement
     title: Explain every selection and every skip in the classify output
-    status: draft
+    status: verified
     description: >
       `sieve classify --explain` reports, per class, the changed path that
       selected it and the edge kind (cargo, path-attr, include, wit,
@@ -326,14 +326,17 @@ artifacts:
       for an unresolved class the unresolved input, so a skip is reviewable
       in the PR log. Survey input (Nx).
     release: v0.2.0
-    fields: {priority: should, category: interface}
+    fields:
+      priority: should
+      category: interface
+      review: author-verified only (tests/cli.rs); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-005}
 
   - id: REQ-021
     type: requirement
     title: Report unresolved inputs in the JSON verdict with a reason code
-    status: draft
+    status: verified
     description: >
       When the derivation knows it cannot see an input (glob, variable,
       @external label, unresolvable include, non-literal generate! path,
@@ -341,7 +344,10 @@ artifacts:
       stable code, not only stderr. The class keeps running and a graph
       refusal keeps selecting everything, as today.
     release: v0.2.0
-    fields: {priority: should, category: interface}
+    fields:
+      priority: should
+      category: interface
+      review: author-verified only (tests/cli.rs); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-003}
 
@@ -388,9 +394,12 @@ artifacts:
     description: >
       Owner direction (2026-11-18). classify and graph read the repository
       in-process through gix (merge-base, tree diff, index) instead of the
-      git command line. Cargo manifests are parsed with cargo's own schema
-      types (cargo-util-schemas) where they fit; target discovery stays
-      sieve's own, corpus-tested. The cargo-metadata cross-check stays an
+      git command line. cargo's own schema types (cargo-util-schemas) were
+      evaluated on 2026-11-19 and not adopted: they would give typed parsing
+      only, while target discovery, workspace inheritance and the source
+      scans (where selection behaviour lives) stay sieve's own and
+      corpus-tested, and a manifest sieve cannot read already selects
+      everything. The cargo-metadata cross-check stays an
       optional check-graph control that reports refused when cargo is
       absent: the cargo crate itself pulls libgit2, curl and openssl and
       would break the single binary and the WASI component.
@@ -475,3 +484,18 @@ artifacts:
     links:
       - {type: satisfies, target: REQ-016}
       - {type: satisfies, target: REQ-017}
+
+  - id: FEAT-004
+    type: feature
+    title: classify --explain and coded unresolved inputs
+    status: verified
+    release: v0.2.0
+    description: >
+      Per selected class, the changed path, the claim and the edge that
+      selected it; per unresolved class, the input and a stable code.
+    fields:
+      phase: phase-2
+      review: "author-verified only (tests/cli.rs); no independent review yet"
+    links:
+      - {type: satisfies, target: REQ-020}
+      - {type: satisfies, target: REQ-021}

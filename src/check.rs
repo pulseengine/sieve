@@ -107,7 +107,25 @@ pub fn cmd_check_graph(
     } else {
         None
     };
-    let tracked = repo.tracked().unwrap_or_default();
+    // A file list that cannot be read is not an empty one: the controls that
+    // need it are refused (exit 3), never run against nothing.
+    let tracked = match repo.tracked() {
+        Ok(t) => t,
+        Err(e) => {
+            for c in selected
+                .iter()
+                .filter(|c| ["graph-inputs", "true-inputs", "no-job"].contains(c))
+            {
+                r.refuse(c, format!("cannot list the repository's files: {e}"));
+            }
+            Vec::new()
+        }
+    };
+    let tracked_ok = !r.refused.iter().any(|f| {
+        f["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("cannot list"))
+    });
 
     for &c in &selected {
         match (c, &g) {
@@ -137,6 +155,7 @@ pub fn cmd_check_graph(
                 }
             }
             (_, None) => {} // graph failure already reported
+            ("graph-inputs", Some(_)) if !tracked_ok => {} // refused above
             ("graph-inputs", Some(g)) => {
                 for (name, cg) in g {
                     r.expect(c, cg.unresolved.is_empty(), "unresolved", || {
@@ -162,6 +181,7 @@ pub fn cmd_check_graph(
                 }
             }
             ("cargo-metadata", Some(g)) => cargo_metadata(&repo, cfg, g, &mut r),
+            ("true-inputs", Some(_)) if !tracked_ok => {} // refused above
             ("true-inputs", Some(g)) => {
                 for class in &cfg.classes {
                     for p in &class.true_inputs {
@@ -187,6 +207,7 @@ pub fn cmd_check_graph(
                     }
                 }
             }
+            ("no-job", Some(_)) if !tracked_ok => {} // refused above
             ("no-job", Some(g)) => {
                 for p in &cfg.no_job {
                     r.expect(c, tracked.contains(p), "no-job-untracked", || {
@@ -237,7 +258,7 @@ pub fn cmd_check_graph(
                         let stale = g[&class.name]
                             .unresolved
                             .iter()
-                            .any(|u| u.contains("fingerprint is stale"));
+                            .any(|u| u.code == "bazel-snapshot-stale");
                         r.expect(c, !stale, "bazel-snapshot-stale", || {
                             format!(
                                 "{}: the Bazel snapshot is stale; regenerate and commit it",

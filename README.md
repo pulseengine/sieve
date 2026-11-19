@@ -16,8 +16,17 @@ sieve classify --config sieve.toml --event pull_request --base "$BASE_SHA" --for
 sieve classify --config sieve.toml --paths-file changed.txt          # no git call
 sieve graph --config sieve.toml                                      # sieve.graph.v1
 sieve check-graph --config sieve.toml                                # controls on the real tree
+sieve classify --config sieve.toml --paths src/x.rs --explain        # why each class was selected
 sieve --version                                                      # names the JSON schemas
 ```
+
+The classify JSON carries `unresolved`: per class, each input sieve knows it
+cannot see, as `{code, input}` (`include-unresolved`, `generate-path-not-literal`,
+`symlink-outside`, `bazel-snapshot-stale`, ...); such a class always runs. With
+`--explain` it also carries `explain`: per selected class, the changed path, the
+claim that covers it and the edge it came from (`cargo`, `include`, `literal`,
+`build-rs`, `wit`, `bazel`, `zephyr`, `symlink`, `hand`). git is read in-process
+(gix): classify starts no `git` or other process.
 
 Wire a heavy job only through this `if:` form, so that a crashed, cancelled
 or silent classifier still runs the job:

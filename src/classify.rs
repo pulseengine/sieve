@@ -17,6 +17,11 @@ pub struct Verdict {
     pub notes: Vec<String>,
     /// Emit a GitHub `::warning::` (internal failures).
     pub warn: bool,
+    /// class -> unresolved inputs as {code, input} (REQ-021); always in the JSON.
+    pub unresolved: BTreeMap<String, Vec<serde_json::Value>>,
+    /// class -> why it was selected: {path, claim, via} per changed path, or
+    /// {unresolved} (REQ-020; printed with --explain).
+    pub explain: BTreeMap<String, Vec<serde_json::Value>>,
 }
 
 impl Verdict {
@@ -30,6 +35,8 @@ impl Verdict {
             unknown_paths: vec![],
             inputs_hash: None,
             notes: vec![],
+            unresolved: BTreeMap::new(),
+            explain: BTreeMap::new(),
         }
     }
 }
@@ -107,7 +114,7 @@ pub fn inputs_hash(cfg: &Config, g: &Graph) -> String {
         }
         for u in &cg.unresolved {
             h.update(b"\0unresolved\0");
-            h.update(u.as_bytes());
+            h.update(u.to_string().as_bytes());
         }
     }
     format!("{:x}", h.finalize())
@@ -140,8 +147,19 @@ pub fn classify(
         inputs_hash: Some(inputs_hash(cfg, g)),
         notes: vec![],
         warn: false,
+        unresolved: BTreeMap::new(),
+        explain: BTreeMap::new(),
     };
     for (c, cg) in g {
+        if !cg.unresolved.is_empty() {
+            v.unresolved
+                .insert(c.clone(), cg.unresolved.iter().map(|u| u.json()).collect());
+            v.explain.entry(c.clone()).or_default().extend(
+                cg.unresolved
+                    .iter()
+                    .map(|u| serde_json::json!({"unresolved": u.json()})),
+            );
+        }
         if let Some(u) = cg.unresolved.first() {
             v.classes.insert(c.clone(), true);
             v.notes
@@ -184,6 +202,12 @@ pub fn classify(
             continue; // docs only
         }
         for c in &hits {
+            if let Some((claim, via)) = g[*c].claim_of(p) {
+                v.explain
+                    .entry((*c).clone())
+                    .or_default()
+                    .push(serde_json::json!({"path": p, "claim": claim, "via": via}));
+            }
             v.classes.insert((*c).clone(), true);
         }
         if is_inert(cfg, p) {
@@ -203,10 +227,14 @@ pub fn classify(
         let unknown = std::mem::take(&mut v.unknown_paths);
         let notes = std::mem::take(&mut v.notes);
         let hash = v.inputs_hash.take();
+        let unresolved = std::mem::take(&mut v.unresolved);
+        let explain = std::mem::take(&mut v.explain);
         v = Verdict::all(cfg, r);
         v.unknown_paths = unknown;
         v.notes = notes;
         v.inputs_hash = hash;
+        v.unresolved = unresolved;
+        v.explain = explain;
     }
     Ok(v)
 }
