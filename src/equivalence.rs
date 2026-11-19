@@ -25,6 +25,39 @@ pub struct Opts {
     pub format: String,
 }
 
+/// A fresh scratch directory nobody else can write into: created with
+/// `create_dir` (fails if the name exists) under an unpredictable name, mode
+/// 0700 on unix, so no file in it can be pre-planted or symlinked.
+fn private_dir() -> std::io::Result<PathBuf> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let base = std::env::temp_dir();
+    for attempt in 0..16u32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d = base.join(format!(
+            "sieve-equivalence-{}-{nanos:x}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&d) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
+                }
+                return Ok(d);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(
+        "could not create a private scratch directory",
+    ))
+}
+
 /// Run the old detector on one path list; its outputs as name -> bool.
 fn run_old(
     o: &Opts,
@@ -69,11 +102,13 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let tmp = std::env::temp_dir().join(format!("sieve-equivalence-{}", std::process::id()));
-    if let Err(e) = std::fs::create_dir_all(&tmp) {
-        eprintln!("sieve equivalence: refused: {e}");
-        return ExitCode::from(3);
-    }
+    let tmp = match private_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("sieve equivalence: refused: {e}");
+            return ExitCode::from(3);
+        }
+    };
     let (paths_file, out_file) = (tmp.join("paths.txt"), tmp.join("github_output"));
     let repo = Repo {
         root: root.clone(),
