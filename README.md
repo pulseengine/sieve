@@ -165,6 +165,10 @@ against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
   `[workflows.job_outputs]` map (job to classes) is HAND-MAINTAINED;
 - (c) the classifier selects everything on push, merge_group, no base, a bad
   base and an empty diff;
+- (d) cross-class builds (REQ-026): a gated job whose run step names a Cargo
+  package (`cargo build|run|test|... -p X`, `--package X`,
+  `--manifest-path P`) must have a class that claims that package's
+  manifest; an unknown package or an expression fails closed;
 - never-skip guard jobs: `[workflows] never_skip_jobs` names jobs a guard
   requires on every pull request (hardware runs, the evidence verifier's
   negative control, proof checks, equivalence jobs); each must have no `if:`

@@ -443,7 +443,7 @@ artifacts:
   - id: REQ-026
     type: requirement
     title: Flag a job that builds another class's binary without claiming its inputs
-    status: draft
+    status: verified
     release: v0.3.0
     description: >
       Found by spar's switch-over (2026-11-19): spar's Lean job runs
@@ -455,7 +455,17 @@ artifacts:
       each gated job's run steps for `cargo build|run|test -p X` (and
       `--package X`, `--manifest-path`) and requires the job's classes to
       claim X's manifest; a miss is a gate failure.
-    fields: {priority: should, category: functional}
+      Implemented as check-workflows gate (d): cargo build, run, test,
+      check, clippy, nextest, llvm-cov, kani, miri, bench and doc, with
+      -p/--package (an @version or :version suffix stripped) or
+      --manifest-path resolved against the step's working directory.
+      Fail closed: an unknown package, a path leaving the repository, or an
+      expression. Not covered: a binary path built by another class, and
+      a whole-workspace build without -p.
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (tests/cross_class.rs, spar pre-fix shape; 3 rule mutants killed); not run on a real adopter tree (no job_outputs map yet)
     links:
       - {type: constraint-satisfies, target: SC-001}
 
