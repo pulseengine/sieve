@@ -70,6 +70,11 @@ pub struct Workflows {
     /// HAND-MAINTAINED: "<workflow file>:<job id>:<step name>" -> reason a
     /// `continue-on-error` step that nothing observes is allowed.
     pub coe_exempt: BTreeMap<String, String>,
+    /// Jobs a North Star guard requires to run on every pull request and in
+    /// the merge queue (hardware runs, the evidence verifier's negative
+    /// control, proof checks, equivalence jobs). check-workflows fails any of
+    /// them that can be skipped (REQ-028).
+    pub never_skip_jobs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -316,7 +321,12 @@ pub fn parse(text: &str, rel_path: &str) -> Result<Config> {
 fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Result<Workflows> {
     check_keys(
         t,
-        &["required_contexts", "job_outputs", "coe_exempt"],
+        &[
+            "required_contexts",
+            "job_outputs",
+            "coe_exempt",
+            "never_skip_jobs",
+        ],
         "workflows",
     )?;
     let mut w = Workflows::default();
@@ -342,6 +352,12 @@ fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Resu
                 return Err(format!("{what}: `{bad}` is not a [class.<name>]"));
             }
             w.job_outputs.insert(job.clone(), outs);
+        }
+    }
+    if let Some(v) = t.get("never_skip_jobs") {
+        w.never_skip_jobs = strs(v, "workflows.never_skip_jobs")?;
+        if w.never_skip_jobs.iter().any(|j| j.trim().is_empty()) {
+            return Err("workflows.never_skip_jobs: empty job name".into());
         }
     }
     if let Some(v) = t.get("coe_exempt") {

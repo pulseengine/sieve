@@ -480,17 +480,22 @@ artifacts:
 
   - id: REQ-028
     type: requirement
-    title: Classes a North Star guard requires to run can never be skipped
-    status: draft
+    title: Jobs a North Star guard requires to run can never be skipped
+    status: verified
     release: v0.3.0
     description: >
-      A `never_skip` list in sieve.toml names job classes whose skip would break
+      A `never_skip_jobs` list in sieve.toml names jobs whose skip would break
       an objective guard: hardware runs (O1: a skipped hardware run counts as a
       failure), the evidence verifier's negative control (O2), required proof
       checks and the trust-escape ledger (O3), and a gate's equivalence test
-      (O5). check-workflows fails a listed job whose if: reads a classifier
-      output, and the classify JSON marks those classes always selected.
-    fields: {priority: must, category: functional}
+      (O5). check-workflows fails a listed job that can be skipped: an if:
+      other than always() or !cancelled(), a need that has its own if:, a
+      workflow trigger gate (a) rejects, or a name no workflow defines.
+      Config key: [workflows] never_skip_jobs.
+    fields:
+      priority: must
+      category: functional
+      review: author-verified only (tests/never_skip.rs; 3 rule mutants killed); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-004}
 
@@ -651,14 +656,16 @@ artifacts:
   - id: FEAT-007
     type: feature
     title: "Bet A: never-skip classes for North Star guards (serves: O1, O2, O3, O5 guards)"
-    status: draft
+    status: verified
     release: v0.3.0
     description: >
       Serves the O1, O2, O3 and O5 guard metrics. Acceptance: a plant per
       guard kind turns check-workflows red when the job is made skippable;
       0 plants survive. Kill: a guard job in gale, kiln, spar or relay is
       skippable after the check passes.
-    fields: {phase: phase-2}
+    fields:
+      phase: phase-2
+      review: author-verified only (tests/never_skip.rs; 3 rule mutants killed); no independent review yet
     links:
       - {type: satisfies, target: REQ-028}
 
