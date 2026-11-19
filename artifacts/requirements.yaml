@@ -456,6 +456,25 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-001}
 
+  - id: REQ-027
+    type: requirement
+    title: A nested workspace's own Cargo.lock belongs to the classes that build that workspace
+    status: draft
+    release: v0.3.0
+    description: >
+      Measured on gale main e85b762 (the 25 commits since gale#491): 3 of
+      them ran everything only because a nested workspace's lockfile changed
+      (os/gust/Cargo.lock, drivers/sen66-thin/Cargo.lock). A Cargo.lock that
+      sits beside a manifest declaring its own [workspace] affects only that
+      workspace's builds, so it is claimed by every class whose Cargo walk
+      reaches that root, and it stays run-all when no class does. The
+      repository-root Cargo.lock stays a built-in run-all path. gale agrees
+      (2026-11-19). An equivalence run against the consumer's old detector
+      gates the change.
+    fields: {priority: should, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
