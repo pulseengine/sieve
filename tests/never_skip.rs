@@ -96,3 +96,54 @@ fn every_way_to_make_a_guard_job_skippable_is_caught() {
         );
     }
 }
+
+// rivet: verifies REQ-028
+#[test]
+fn a_guard_job_cannot_be_skipped_or_emptied_indirectly() {
+    let hw = "  hw:\n    name: Hardware run\n";
+    let steps = "    runs-on: x\n    steps:\n      - run: true\n";
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            "transitive-need",
+            format!("{BASE}{LINT}  a:\n    if: github.event_name == 'push'\n{steps}  b:\n    needs: [a]\n{steps}{hw}    needs: [b]\n{steps}"),
+            "never-skip-needs",
+        ),
+        ("missing-need", format!("{BASE}{LINT}{hw}    needs: [ghost]\n{steps}"), "never-skip-needs"),
+        (
+            "step-if",
+            format!("{BASE}{LINT}{hw}    runs-on: x\n    steps:\n      - if: needs.c.outputs.hw == 'true'\n        run: ./flash.sh\n"),
+            "never-skip-step-if",
+        ),
+        ("continue-on-error", format!("{BASE}{LINT}{hw}    continue-on-error: true\n{steps}"), "never-skip-continue-on-error"),
+        (
+            "matrix-expression",
+            format!("{BASE}{LINT}{hw}    strategy:\n      matrix: ${{{{ fromJSON(needs.c.outputs.boards) }}}}\n{steps}"),
+            "never-skip-matrix",
+        ),
+        (
+            "matrix-empty-axis",
+            format!("{BASE}{LINT}{hw}    strategy:\n      matrix:\n        board: []\n{steps}"),
+            "never-skip-matrix",
+        ),
+        ("reusable", format!("{BASE}{LINT}{hw}    uses: ./.github/workflows/hw-impl.yml\n"), "never-skip-reusable"),
+        (
+            "wrapped-not-exact",
+            format!("{BASE}{LINT}{hw}    if: ${{{{ always() && false }}}}\n{steps}"),
+            "never-skip-if",
+        ),
+    ];
+    for (name, wf, want) in cases {
+        let (code, c) = codes(&repo(name, &wf));
+        assert_eq!(code, Some(1), "{name}: {c:?}");
+        assert!(
+            c.iter().any(|x| x == want),
+            "{name}: want {want}, got {c:?}"
+        );
+    }
+    // ${{ always() }} wrapped once is accepted, as is an unconditional need chain.
+    let ok = format!(
+        "{BASE}{LINT}  a:\n{steps}{hw}    needs: [a]\n    if: ${{{{ always() }}}}\n{steps}"
+    );
+    let (code, c) = codes(&repo("ok-chain", &ok));
+    assert_eq!(code, Some(0), "{c:?}");
+}

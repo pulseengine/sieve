@@ -266,6 +266,104 @@ fn job_name(job: &Yaml, jid: &str) -> String {
     }
 }
 
+/// An if: that keeps a job (or step) running: exactly always() or !cancelled(),
+/// optionally inside one `${{ }}` wrapper.
+fn unconditional_if(cond: &Yaml) -> bool {
+    let raw = py_str(cond);
+    let mut c = raw.trim();
+    if let Some(inner) = c.strip_prefix("${{").and_then(|x| x.strip_suffix("}}")) {
+        c = inner.trim();
+    }
+    c == "always()" || c == "!cancelled()"
+}
+
+/// Why a never-skip job could be skipped or emptied, if it could (REQ-028).
+fn never_skip_problem(
+    state: &Option<Problem>,
+    jobs: Option<&Yaml>,
+    jid: &str,
+    job: &Yaml,
+) -> Option<(String, String)> {
+    if let Some((code, detail)) = state {
+        return Some((format!("never-skip-trigger-{code}"), detail.clone()));
+    }
+    if get(job, "uses").is_some() {
+        return Some((
+            "never-skip-reusable".into(),
+            "a guard job calls a reusable workflow; its callee is not checked".into(),
+        ));
+    }
+    if let Some(c) = get(job, "if") {
+        if !unconditional_if(c) {
+            return Some((
+                "never-skip-if".into(),
+                format!(
+                    "a guard job must not be skippable; its if: is `{}`",
+                    py_str(c)
+                ),
+            ));
+        }
+    }
+    if get(job, "continue-on-error").is_some_and(truthy) {
+        return Some((
+            "never-skip-continue-on-error".into(),
+            "a guard job must not swallow its own failure".into(),
+        ));
+    }
+    if let Some(m) = get(job, "strategy").and_then(|st| get(st, "matrix")) {
+        match m {
+            Yaml::Hash(_) => {
+                for (k, v) in entries(Some(m)) {
+                    if k == "include" || k == "exclude" {
+                        continue;
+                    }
+                    if !matches!(v, Yaml::Array(a) if !a.is_empty()) {
+                        return Some((
+                            "never-skip-matrix".into(),
+                            format!("matrix axis `{k}` is not a non-empty literal list"),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Some((
+                    "never-skip-matrix".into(),
+                    "the matrix is an expression, not a literal".into(),
+                ));
+            }
+        }
+    }
+    for st in list(get(job, "steps")) {
+        if let Some(c) = get(st, "if") {
+            if !unconditional_if(c) {
+                return Some((
+                    "never-skip-step-if".into(),
+                    format!("a step of a guard job has if: `{}`", py_str(c)),
+                ));
+            }
+        }
+    }
+    // every job it needs, transitively, must exist and be unconditional
+    let mut seen = BTreeSet::new();
+    let mut todo: Vec<String> = get(job, "needs").map(members).unwrap_or_default();
+    while let Some(n) = todo.pop() {
+        if n == jid || !seen.insert(n.clone()) {
+            continue;
+        }
+        let Some(nj) = jobs.and_then(|j| get(j, &n)) else {
+            return Some((
+                "never-skip-needs".into(),
+                format!("needs `{n}`, which no job in this workflow defines"),
+            ));
+        };
+        if get(nj, "if").is_some_and(|c| !unconditional_if(c)) {
+            return Some(("never-skip-needs".into(), format!("needs `{n}` (directly or through another need), which has its own if: and can be skipped; the skip would propagate")));
+        }
+        todo.extend(get(nj, "needs").map(members).unwrap_or_default());
+    }
+    None
+}
+
 // --------------------------------------------------- (b) skip only via sieve
 
 fn needs_result() -> Regex {
@@ -945,57 +1043,40 @@ pub fn cmd_check_workflows(
     }
 
     // never-skip guard jobs (REQ-028): each runs on every pull request and in
-    // the merge queue. No if: beyond always()/!cancelled(), no need that can
-    // be skipped, and a workflow trigger that gate (a) accepts.
+    // the merge queue, and does its work. Fail closed on anything that could
+    // skip it or empty it: an if: beyond always()/!cancelled() on the job, on
+    // any job it needs (transitively), or on any of its steps; a missing need;
+    // a truthy continue-on-error; a matrix given as an expression or with an
+    // empty axis; a reusable-workflow call (its callee is not checked here);
+    // a workflow trigger gate (a) rejects.
     for name in &cfg.workflows.never_skip_jobs {
         r.n += 1;
         let mut found = false;
         for wf in &wfs {
-            for (jid, job) in entries(get(&wf.doc, "jobs")) {
+            let jobs = get(&wf.doc, "jobs");
+            for (jid, job) in entries(jobs) {
                 if job_name(job, &jid) != *name && jid != *name {
                     continue;
                 }
                 found = true;
                 let ctx = format!("never-skip {name}");
-                if let Some((code, detail)) = &wf.state {
-                    r.fail(
-                        "a",
+                match never_skip_problem(&wf.state, jobs, &jid, job) {
+                    Some((code, detail)) => r.fail(
+                        if code.starts_with("never-skip-trigger") {
+                            "a"
+                        } else {
+                            "b"
+                        },
                         &ctx,
                         &wf.file,
                         &jid,
-                        &format!("never-skip-{code}"),
-                        detail.clone(),
-                    );
-                    continue;
+                        &code,
+                        detail,
+                    ),
+                    None => r
+                        .text
+                        .push(format!("    never-skip     {name}   [{}]", wf.file)),
                 }
-                if let Some(cond) = get(job, "if") {
-                    let c = py_str(cond).replace(['$', '{', '}'], "").trim().to_string();
-                    if c != "always()" && c != "!cancelled()" {
-                        r.fail(
-                            "b",
-                            &ctx,
-                            &wf.file,
-                            &jid,
-                            "never-skip-if",
-                            format!(
-                                "a guard job must not be skippable; its if: is `{}`",
-                                py_str(cond)
-                            ),
-                        );
-                        continue;
-                    }
-                }
-                let jobs = get(&wf.doc, "jobs");
-                let skippable_need = members(get(job, "needs").unwrap_or(&Yaml::Null))
-                    .into_iter()
-                    .find(|n| jobs.and_then(|j| get(j, n)).is_some_and(|nj| has(nj, "if")));
-                if let Some(n) = skippable_need {
-                    r.fail("b", &ctx, &wf.file, &jid, "never-skip-needs",
-                        format!("needs `{n}`, which has its own if: and can be skipped; the skip would propagate"));
-                    continue;
-                }
-                r.text
-                    .push(format!("    never-skip     {name}   [{}]", wf.file));
             }
         }
         if !found {
