@@ -113,3 +113,90 @@ fn nothing_to_judge_is_refused() {
     let (code, _) = observe(&d, &d.join("bad.json"), serde_json::json!([]));
     assert_eq!(code, Some(3), "not a classify verdict");
 }
+
+fn observe_costs(
+    d: &Path,
+    verdict: &Path,
+    jobs: serde_json::Value,
+    costs: serde_json::Value,
+) -> (Option<i32>, serde_json::Value) {
+    let r = d.join("jobs.json");
+    fs::write(&r, jobs.to_string()).unwrap();
+    let c = d.join("costs.json");
+    fs::write(&c, costs.to_string()).unwrap();
+    let o = Command::new(BIN)
+        .args(["observe", "--config", "sieve.toml", "--format", "json"])
+        .arg("--verdict")
+        .arg(verdict)
+        .arg("--results")
+        .arg(&r)
+        .arg("--costs")
+        .arg(&c)
+        .current_dir(d)
+        .output()
+        .unwrap();
+    let v = serde_json::from_slice(&o.stdout).unwrap_or(serde_json::Value::Null);
+    (o.status.code(), v)
+}
+
+// rivet: verifies REQ-029
+#[test]
+fn misses_are_m_of_n_and_the_saving_is_an_estimate_from_the_cost_table() {
+    let d = dir("costs");
+    let v = verdict(&d, false);
+    let costs = serde_json::json!({
+        "schema": "sieve.costs.v1", "merge_queue": false,
+        "jobs": {"Heavy A": 12.5, "Heavy B": 40}
+    });
+    // a is skipped: two matrix legs of Heavy A conclude, one is cancelled;
+    // Heavy B was selected, so it is neither compared nor saved
+    let jobs = serde_json::json!([
+        {"name": "Heavy A (x86)", "conclusion": "success"},
+        {"name": "Heavy A (arm)", "conclusion": "success"},
+        {"name": "Heavy A (riscv)", "conclusion": "cancelled"},
+        {"name": "Heavy B", "conclusion": "success"}
+    ]);
+    let (code, out) = observe_costs(&d, &v, jobs, costs.clone());
+    assert_eq!(code, Some(0), "{out}");
+    assert_eq!(out["compared_skipped_jobs"], 2, "{out}");
+    assert_eq!(out["misses"].as_array().unwrap().len(), 0, "{out}");
+    assert_eq!(
+        out["uncompared_skipped_jobs"][0]["job"], "Heavy A (riscv)",
+        "{out}"
+    );
+    assert_eq!(out["estimated_saved_runner_minutes"], 25.0, "{out}");
+    assert_eq!(out["skipped_jobs_run_before_merge"], false, "{out}");
+
+    // a failed skipped job is 1 of N, and its cost still counts as skipped
+    let jobs = serde_json::json!([
+        {"name": "Heavy A", "conclusion": "failure"},
+        {"name": "Heavy B", "conclusion": "success"}
+    ]);
+    let (code, out) = observe_costs(&d, &v, jobs, costs.clone());
+    assert_eq!(code, Some(1), "{out}");
+    assert_eq!(out["compared_skipped_jobs"], 1, "{out}");
+    assert_eq!(out["misses"].as_array().unwrap().len(), 1, "{out}");
+
+    // a skipped job with no cost is listed, never counted as zero
+    let no_cost = serde_json::json!({"schema": "sieve.costs.v1", "merge_queue": true, "jobs": {}});
+    let jobs = serde_json::json!([{"name": "Heavy A", "conclusion": "success"}]);
+    let (_, out) = observe_costs(&d, &v, jobs.clone(), no_cost);
+    assert_eq!(out["uncosted_skipped_jobs"][0], "Heavy A", "{out}");
+    assert_eq!(out["estimated_saved_runner_minutes"], 0.0, "{out}");
+    assert_eq!(out["skipped_jobs_run_before_merge"], true, "{out}");
+
+    // a malformed cost table is refused, not guessed
+    for bad in [
+        serde_json::json!({"schema": "sieve.costs.v1", "jobs": {}}),
+        serde_json::json!({"schema": "x", "merge_queue": false, "jobs": {}}),
+        serde_json::json!({"schema": "sieve.costs.v1", "merge_queue": false, "jobs": {"Heavy A": -1}}),
+    ] {
+        let (code, out) = observe_costs(&d, &v, jobs.clone(), bad.clone());
+        assert_eq!(code, Some(3), "{bad} -> {out}");
+    }
+
+    // without a cost table nothing is estimated
+    let (_, out) = observe(&d, &v, jobs);
+    assert!(out["estimated_saved_runner_minutes"].is_null(), "{out}");
+    assert_eq!(out["compared_skipped_jobs"], 1, "{out}");
+}
