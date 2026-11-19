@@ -22,8 +22,10 @@ pub struct Opts {
     pub commits: usize,
     /// old output name -> the sieve classes it stands for (one-to-many)
     pub map: BTreeMap<String, Vec<String>>,
-    /// classes whose narrowing is intended: reported, not failing
-    pub accept_narrowing: BTreeSet<String>,
+    /// class -> path prefixes under which its narrowing is intended. A
+    /// commit's narrowing of the class is accepted only if EVERY path the
+    /// commit changed starts with one prefix; "" accepts the whole class.
+    pub accept_narrowing: BTreeMap<String, Vec<String>>,
     pub format: String,
 }
 
@@ -161,9 +163,13 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
                 gained = true;
             }
         }
-        let (ok_lost, bad_lost): (Vec<String>, Vec<String>) = lost
-            .into_iter()
-            .partition(|c| o.accept_narrowing.contains(c));
+        let (ok_lost, bad_lost): (Vec<String>, Vec<String>) = lost.into_iter().partition(|c| {
+            o.accept_narrowing.get(c).is_some_and(|prefixes| {
+                prefixes
+                    .iter()
+                    .any(|p| paths.iter().all(|x| x.starts_with(p.as_str())))
+            })
+        });
         if !ok_lost.is_empty() {
             accepted.push(json!({"commit": commit, "lost": ok_lost, "paths": paths.iter().take(20).collect::<Vec<_>>()}));
         }
@@ -190,7 +196,9 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
             "wider": wider,
             "narrower": narrower,
             "accepted_narrowings": accepted,
-            "accept_narrowing_classes": o.accept_narrowing,
+            // a list of class names, as in v0.2.1; the prefixes are separate
+            "accept_narrowing_classes": o.accept_narrowing.keys().collect::<Vec<_>>(),
+            "accept_narrowing_prefixes": o.accept_narrowing,
             "skipped": skipped,
             "errors": errors,
             "classes_compared": compared_classes,

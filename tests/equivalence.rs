@@ -250,3 +250,45 @@ fn an_empty_commit_is_listed_as_skipped_and_an_unknown_class_is_a_usage_error() 
     let (code, _) = run(&d, &c, &old, &["--map", "x=nope"]);
     assert_eq!(code, Some(2));
 }
+
+// rivet: verifies REQ-013
+#[test]
+fn a_narrowing_can_be_accepted_under_a_path_prefix_only() {
+    let d = history("accept-prefix");
+    // one more commit touching a/ AND the README: it also drops b
+    fs::write(d.join("a/x"), "3").unwrap();
+    fs::write(d.join("README.md"), "# r3\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "a and readme"]);
+    let c = cfg(&d);
+    let old = script(&d, "code.sh", "echo 'code=true' >> \"$GITHUB_OUTPUT\"");
+    let base = ["--map", "code=a", "--map", "code=b"];
+    // b's loss is accepted only where every changed path is under a/
+    let mut args = base.to_vec();
+    args.extend(["--accept-narrowing", "b:a/"]);
+    let (code, v) = run(&d, &c, &old, &args);
+    assert_eq!(code, Some(1), "{v}");
+    let accepted: Vec<&str> = v["accepted_narrowings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["paths"][0].as_str().unwrap())
+        .collect();
+    assert_eq!(accepted, ["a/x"], "only the a/-only commit: {v}");
+    // narrower: b/y (drops a), README (drops both), a+README (drops b, README outside a/)
+    assert_eq!(v["narrower"].as_array().unwrap().len(), 3, "{v}");
+    assert_eq!(
+        v["accept_narrowing_classes"],
+        serde_json::json!(["b"]),
+        "{v}"
+    );
+    assert_eq!(
+        v["accept_narrowing_prefixes"]["b"],
+        serde_json::json!(["a/"]),
+        "{v}"
+    );
+    // an empty prefix is a usage error, not "accept everything"
+    let mut args = base.to_vec();
+    args.extend(["--accept-narrowing", "b:"]);
+    let (code, _) = run(&d, &c, &old, &args);
+    assert_eq!(code, Some(2));
+}
