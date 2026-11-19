@@ -110,3 +110,32 @@ artifacts:
     links:
       - {type: satisfies, target: REQ-005}
       - {type: satisfies, target: REQ-004}
+
+  - id: DD-006
+    type: design-decision
+    title: Read the repository in-process with gix; no git or cargo process at classify time
+    status: draft
+    release: v0.2.0
+    fields:
+      decision: >
+        src/gitrepo.rs reads git through gix 0.90 (features sha1, index,
+        revision, blob-diff): merge-base(base, head), a tree-to-tree diff
+        with default options (full paths, no rewrite tracking, so a rename
+        is a delete plus an add, as with --no-renames), tree entries
+        dropped, gitlinks kept; the index replaces `git ls-files`. Every
+        gix error is an Err that classify turns into run_all. The
+        cargo-metadata control in check-graph remains the one subprocess,
+        optional and refused when cargo is absent.
+      rationale: >
+        Owner direction: one Rust binary, no git command line. Classify no
+        longer depends on what is installed on the runner, and the core
+        moves closer to a WASI component.
+      alternatives: >
+        The cargo crate as a library (to bring cargo metadata in-process):
+        rejected, it pulls gix with curl or libgit2 and openssl, which breaks
+        the single small binary. An own minimal git object reader: rejected,
+        packfiles and the index format are where a hand-written reader goes
+        wrong. cargo-util-schemas for manifest parsing is a separate step
+        under REQ-024.
+    links:
+      - {type: satisfies, target: REQ-024}

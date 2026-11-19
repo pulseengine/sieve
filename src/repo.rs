@@ -1,8 +1,8 @@
-//! The repository on disk. With `git = false` sieve makes no git call at all
-//! (plant's `--paths-file` and `graph` without .git).
+//! The repository on disk. With `git = false` sieve reads no git data at all
+//! (plant's `--paths-file` and `graph` without .git); with `git = true` it reads
+//! the index in-process through gix, never through a `git` process.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 pub struct Repo {
     pub root: PathBuf,
@@ -112,14 +112,7 @@ impl Repo {
         if !self.git {
             return Ok(self.walk(""));
         }
-        let o = git(&self.root, &["ls-files", "-z"])?;
-        let mut v: Vec<String> = o
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
-        v.sort();
-        Ok(v)
+        crate::gitrepo::index_paths(&self.root)
     }
 
     /// Glob a pattern of `*`/`?` components against the tree.
@@ -187,23 +180,6 @@ pub fn wildcard(pat: &str, s: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
-}
-
-pub fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let o = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
-    if !o.status.success() {
-        let err = String::from_utf8_lossy(&o.stderr);
-        return Err(format!(
-            "git {}: {}",
-            args.join(" "),
-            err.trim().chars().take(200).collect::<String>()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
 #[cfg(test)]

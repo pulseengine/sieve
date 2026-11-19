@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 aho-corasick = "1"
+gix = { version = "0.90", default-features = false, features = ["sha1", "index", "revision", "blob-diff"] }
 regex = "1"
 serde_json = "1"
 sha2 = "0.10"

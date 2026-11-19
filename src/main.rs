@@ -4,6 +4,7 @@
 mod check;
 mod classify;
 mod config;
+mod gitrepo;
 mod graph;
 mod lex;
 mod repo;
