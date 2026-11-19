@@ -114,3 +114,65 @@ fn what_cannot_be_resolved_fails_closed() {
     ));
     assert_eq!(c, vec!["cross-class-unresolved".to_string()], "{c:?}");
 }
+
+/// spar with a test and a path dev-dependency; the Lean class is given by
+/// `lean_class` (a sieve.toml fragment for [class.lean]).
+fn closure_tree(name: &str, lean_class: &str, lean_run: &str) -> PathBuf {
+    let d = tree(name, false, lean_run);
+    for (p, body) in [
+        (
+            "spar/Cargo.toml",
+            "[package]\nname = \"spar\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dev-dependencies]\nfixtures = { path = \"../fixtures\" }\n",
+        ),
+        ("spar/tests/gen.rs", "#[test] fn t() {}\n"),
+        ("fixtures/Cargo.toml", "[package]\nname = \"fixtures\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("fixtures/src/lib.rs", "\n"),
+        (
+            "tool/Cargo.toml",
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nspar = { path = \"../spar\" }\n",
+        ),
+        ("tool/src/main.rs", "fn main() {}\n"),
+        ("Cargo.toml", "[workspace]\nmembers = [\"spar\", \"fixtures\", \"tool\"]\n"),
+    ] {
+        let f = d.join(p);
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(f, body).unwrap();
+    }
+    fs::write(
+        d.join("sieve.toml"),
+        format!(
+            "[class.rust]\ncargo = [\"spar/Cargo.toml\"]\n[class.lean]\n{lean_class}\
+             [workflows]\nrequired_contexts = \".github/required-contexts.txt\"\n\
+             [workflows.job_outputs]\n\"Lean\" = [\"lean\"]\n"
+        ),
+    )
+    .unwrap();
+    d
+}
+
+// rivet: verifies REQ-026
+#[test]
+fn claiming_the_manifest_alone_does_not_cover_what_the_job_builds() {
+    // the manifest is claimed, spar's sources are not
+    let c = codes(&closure_tree(
+        "manifest-only",
+        "hand = [\"lean/\", \"spar/Cargo.toml\"]\n",
+        "cargo build -p spar",
+    ));
+    assert_eq!(c, vec!["cross-class-build".to_string()], "{c:?}");
+    // spar reached only as a normal dependency of tool: its tests and its
+    // dev-dependency are not claimed, but `cargo test -p spar` builds them
+    let c = codes(&closure_tree(
+        "via-dependency",
+        "hand = [\"lean/\"]\ncargo = [\"tool/Cargo.toml\"]\n",
+        "cargo test -p spar",
+    ));
+    assert_eq!(c, vec!["cross-class-build".to_string()], "{c:?}");
+    // a class with spar as a root claims all of it, dev-dependency included
+    let c = codes(&closure_tree(
+        "root",
+        "hand = [\"lean/\"]\ncargo = [\"spar/Cargo.toml\"]\n",
+        "cargo test -p spar",
+    ));
+    assert!(c.is_empty(), "{c:?}");
+}

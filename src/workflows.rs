@@ -442,6 +442,27 @@ fn cargo_builds(wfs: &[Wf], cfg: &Config) -> Vec<CargoBuild> {
     out
 }
 
+/// The claims sieve's graph gives a class whose only Cargo root is `manifest`:
+/// what `cargo build|test|run -p` of that package reads.
+fn built_closure(
+    repo: &crate::repo::Repo,
+    cfg: &Config,
+    manifest: &str,
+) -> Result<Vec<String>, String> {
+    let mut one = cfg.clone();
+    one.classes = vec![crate::config::Class {
+        name: "__built__".into(),
+        cargo: vec![manifest.to_string()],
+        ..Default::default()
+    }];
+    let g = crate::graph::derive(repo, &one).map_err(|e| e.message)?;
+    let cg = g.get("__built__").ok_or("no closure derived")?;
+    if let Some(u) = cg.unresolved.first() {
+        return Err(format!("unresolved input {u}"));
+    }
+    Ok(cg.claims.keys().cloned().collect())
+}
+
 fn cross_class_check(r: &mut Report, builds: &[CargoBuild], root: &Path, cfg: &Config) {
     let repo = crate::repo::Repo {
         root: root.to_path_buf(),
@@ -528,23 +549,44 @@ fn cross_class_check(r: &mut Report, builds: &[CargoBuild], root: &Path, cfg: &C
             }
             (None, None) => continue,
         };
-        // a package name shared by several manifests: each must be claimed
-        let unclaimed: Vec<&String> = manifests
-            .iter()
-            .filter(|m| {
-                !b.classes
-                    .iter()
-                    .any(|c| graph.get(c).is_some_and(|g| g.claims_path(m)))
-            })
-            .collect();
-        if unclaimed.is_empty() {
+        // What the command builds is the package's full Cargo closure as sieve
+        // derives it for a root (all targets, dev-dependencies, path deps,
+        // literal reads), not just its manifest. Every claim of that closure
+        // must be covered by one of the job's classes. A package name shared
+        // by several manifests needs each closure covered.
+        let covered = |p: &str| {
+            b.classes
+                .iter()
+                .any(|c| graph.get(c).is_some_and(|g| g.claims_path(p)))
+        };
+        let mut unclaimed: Vec<String> = vec![];
+        let mut failed_closure = None;
+        for m in &manifests {
+            match built_closure(&repo, cfg, m) {
+                Ok(claims) => unclaimed.extend(claims.into_iter().filter(|c| !covered(c))),
+                Err(e) => failed_closure = Some(format!("{m}: {e}")),
+            }
+        }
+        if let Some(e) = failed_closure {
+            r.fail(
+                "d",
+                &ctx,
+                &b.file,
+                &b.jid,
+                "cross-class-unresolved",
+                format!("`{what}`: the closure it builds cannot be derived ({e})"),
+            );
+        } else if unclaimed.is_empty() {
             r.text.push(format!(
                 "    claims         {} builds {what}  [{}]",
                 b.job, b.file
             ));
         } else {
+            unclaimed.sort();
+            unclaimed.dedup();
+            let shown: Vec<&String> = unclaimed.iter().take(5).collect();
             r.fail("d", &ctx, &b.file, &b.jid, "cross-class-build",
-                format!("runs `{what}` but none of its classes {:?} claims {:?}; a change there would skip this job", b.classes, unclaimed));
+                format!("runs `{what}` but its classes {:?} do not claim {} input(s) it builds, e.g. {:?}; a change there would skip this job", b.classes, unclaimed.len(), shown));
         }
     }
 }

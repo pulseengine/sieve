@@ -458,7 +458,10 @@ artifacts:
       Implemented as check-workflows gate (d): cargo build, run, test,
       check, clippy, nextest, llvm-cov, kani, miri, bench and doc, with
       -p/--package (an @version or :version suffix stripped) or
-      --manifest-path resolved against the step's working directory.
+      --manifest-path resolved against the step's working directory. The
+      job's classes must claim the package's full closure as sieve derives
+      it for a Cargo root (all targets, dev-dependencies, path deps, literal
+      reads), not just the manifest.
       Fail closed: an unknown package, a path leaving the repository, or an
       expression. Not covered: a binary path built by another class, and
       a whole-workspace build without -p.
