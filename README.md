@@ -106,6 +106,22 @@ sieve and every commit was compared; any narrowing or a failed run of the old
 detector exits 1. On gale's history against its Python reference: 400/400
 identical.
 
+## Counting observed misses
+
+On main (or every Nth merge-queue run), where every job runs anyway, keep
+sieve's verdict for the commit's own diff and compare it with what failed:
+
+```sh
+sieve classify --config sieve.toml --event pull_request --base HEAD~1 --head HEAD --format json > verdict.json
+# after the other jobs: their conclusions, e.g. from the API's
+# /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+sieve observe --config sieve.toml --verdict verdict.json --results jobs.json
+```
+
+Each job that failed while sieve selected none of its classes
+(`[workflows.job_outputs]`) is an observed miss, and `observe` exits 1. It is
+a field oracle beside plant's planted controls.
+
 ## Verification
 
 `tests/corpus/` is the language-neutral classifier corpus from gale

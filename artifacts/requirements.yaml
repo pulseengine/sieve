@@ -249,13 +249,16 @@ artifacts:
   - id: REQ-015
     type: requirement
     title: Keep the false-skip oracle independent of sieve
-    status: draft
+    status: implemented
     description: >
       sieve's own tests do not count as the false-skip control. plant hosts
       the controls, with an oracle built from rustc dep-info and hand-named
       inputs, not from `sieve graph`.
     release: v0.2.0
-    fields: {priority: must, category: constraint}
+    fields:
+      priority: must
+      category: constraint
+      review: "evidence is in plant, not here: pulseengine/plant#17 (merged 450d978, 2026-11-18) checks sieve v0.1.0 with six planted false-skip controls whose true inputs come from rustc dep-info, not from sieve graph; held at implemented because the criterion belongs to plant"
     links:
       - {type: constraint-satisfies, target: SC-005}
 
@@ -309,7 +312,7 @@ artifacts:
   - id: REQ-019
     type: requirement
     title: Count observed misses by comparing sieve's verdict with a full run
-    status: draft
+    status: verified
     description: >
       Owner-approved input (pulseengine.eu prior-art survey, 2026-11-18;
       Microsoft Test Impact Analysis, Meta predictive test selection). On
@@ -317,7 +320,10 @@ artifacts:
       and run every job; report each job that failed while sieve would have
       skipped it. A field oracle next to plant's planted controls.
     release: v0.2.0
-    fields: {priority: should, category: functional}
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (tests/observe.rs); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-005}
 
@@ -521,3 +527,18 @@ artifacts:
       review: "author-verified only (tests/equivalence.rs; gale 400/400 identical against its Python reference; negative control narrower on 2 of 30); no independent review yet"
     links:
       - {type: satisfies, target: REQ-013}
+
+  - id: FEAT-006
+    type: feature
+    title: sieve observe, the observed-miss counter
+    status: verified
+    release: v0.2.0
+    description: >
+      From sieve's verdict for a commit and the job conclusions of a run where
+      every job ran, lists each job that failed while all its classes were
+      false; a miss exits 1.
+    fields:
+      phase: phase-2
+      review: "author-verified only (tests/observe.rs); the consumer-side collection (on main or every Nth queue run) is each repo's workflow"
+    links:
+      - {type: satisfies, target: REQ-019}
