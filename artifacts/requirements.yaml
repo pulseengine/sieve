@@ -478,6 +478,70 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-006}
 
+  - id: REQ-028
+    type: requirement
+    title: Classes a North Star guard requires to run can never be skipped
+    status: draft
+    release: v0.3.0
+    description: >
+      A `never_skip` list in sieve.toml names job classes whose skip would break
+      an objective guard: hardware runs (O1: a skipped hardware run counts as a
+      failure), the evidence verifier's negative control (O2), required proof
+      checks and the trust-escape ledger (O3), and a gate's equivalence test
+      (O5). check-workflows fails a listed job whose if: reads a classifier
+      output, and the classify JSON marks those classes always selected.
+    fields: {priority: must, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-004}
+
+  - id: REQ-029
+    type: requirement
+    title: sieve observe reports estimated saved runner-minutes and misses as m of N
+    status: draft
+    release: v0.3.0
+    description: >
+      From a consumer cost table, observe reports per class the skipped
+      class-instances, the estimated saved runner-minutes (median cost times
+      skipped classes; an estimate by construction, never called measured)
+      and observed misses as "m of N", N being the skipped class-instances
+      compared against a full run on main. One JSON document per varve layer.
+    fields: {priority: should, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-030
+    type: requirement
+    title: A change confined to one leaf workflow selects only that workflow's job classes
+    status: draft
+    release: v0.3.0
+    description: >
+      Narrows the run-all rule for .github/ (amends REQ-005 and SSC-003;
+      owner decision required before implementation). A change to the
+      classify wiring, sieve.toml, a reusable workflow or a composite action
+      still selects everything; a leaf-workflow edit that weakens its own
+      gating still selects everything (negative control).
+    fields: {priority: should, category: functional}
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+      - {type: derives-from, target: REQ-005}
+      - {type: derives-from, target: SSC-003}
+
+  - id: REQ-031
+    type: requirement
+    title: The classify and graph core runs as a signed WASI component identical to native
+    status: draft
+    release: v0.3.0
+    description: >
+      Built as a WASI component and run in sieve's CI under kiln and wasmtime
+      on every paths-mode corpus case and on gale's last 400 commits, with
+      JSON byte-identical to the native binary, the signature verified
+      before it runs, no GAP switch, and a deliberately divergent build that
+      must go red. Eligible to count under O5 once O5 has an indicator
+      script.
+    fields: {priority: should, category: constraint}
+    links:
+      - {type: satisfies, target: SSC-002}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
@@ -583,3 +647,88 @@ artifacts:
       review: "author-verified only (tests/observe.rs); the consumer-side collection (on main or every Nth queue run) is each repo's workflow"
     links:
       - {type: satisfies, target: REQ-019}
+
+  - id: FEAT-007
+    type: feature
+    title: "Bet A: never-skip classes for North Star guards (serves: O1, O2, O3, O5 guards)"
+    status: draft
+    release: v0.3.0
+    description: >
+      Serves the O1, O2, O3 and O5 guard metrics. Acceptance: a plant per
+      guard kind turns check-workflows red when the job is made skippable;
+      0 plants survive. Kill: a guard job in gale, kiln, spar or relay is
+      skippable after the check passes.
+    fields: {phase: phase-2}
+    links:
+      - {type: satisfies, target: REQ-028}
+
+  - id: FEAT-008
+    type: feature
+    title: "Bet B: independent per-adopter controls in plant (serves: guard for every switch)"
+    status: draft
+    release: v0.3.0
+    description: >
+      No direct objective; safety gate for every switch-over. sieve ships its
+      planted-defect list for plant. Acceptance (plant, per adopter): at
+      least one must-select control per job class, independent of sieve
+      graph; a select-nothing stand-in fails all; each planted defect turns
+      a control red; any survivor blocks the switch.
+    fields: {phase: phase-2}
+    links:
+      - {type: satisfies, target: REQ-015}
+      - {type: satisfies, target: REQ-012}
+
+  - id: FEAT-009
+    type: feature
+    title: "Bet C: scoped workflow edits (serves: none directly; precondition for savings)"
+    status: draft
+    release: v0.3.0
+    description: >
+      Owner decision required (narrows the .github run-all rule). Acceptance: fixed
+      narrowing list; equivalence over gale's 400 commits shows 0 narrower
+      outside it; the gating-weakening negative control selects everything;
+      at least 5 of gale's 14 recent .github/ commits become selective.
+      Kill: fewer than 5 become selective, or any PR steers its own
+      classification.
+    fields: {phase: phase-2}
+    links:
+      - {type: satisfies, target: REQ-030}
+      - {type: satisfies, target: REQ-025}
+      - {type: satisfies, target: REQ-027}
+
+  - id: FEAT-010
+    type: feature
+    title: "Bet D: gale's first observed numbers and the cross-class build check (serves: O4 guard via observed misses)"
+    status: draft
+    release: v0.3.0
+    description: >
+      Acceptance: over 30 merged gale PRs after its switch, N of at least 30
+      skipped class-instances compared, 0 of N observed misses, mean
+      estimated saving at least 20 runner-min/PR; the cross-class check
+      fails on spar's pre-fix draft and on each seeded pattern. Kill: any
+      observed miss, mean below 20, or run-all on more than 80% of the 30.
+      spar and kiln switch only if this is not killed.
+    fields: {phase: phase-2}
+    links:
+      - {type: satisfies, target: REQ-029}
+      - {type: satisfies, target: REQ-013}
+      - {type: satisfies, target: REQ-019}
+      - {type: satisfies, target: REQ-026}
+
+  - id: FEAT-011
+    type: feature
+    title: "Bet E: sieve classify as a signed WASI component under kiln (serves: O5)"
+    status: draft
+    release: v0.3.0
+    description: >
+      Serves O5 (eligible once O5 has an indicator script). Acceptance: CI
+      runs the corpus and gale's 400 commits under kiln and wasmtime,
+      byte-identical to native; a skipped kiln leg fails; a divergent build
+      goes red; no GAP switch; at least one real gate runs the verified
+      signed component. Kill: no preopened directory in kiln, a second
+      non-sieve program needed for the change set, or a pass only behind a
+      GAP switch.
+    fields: {phase: phase-2}
+    links:
+      - {type: satisfies, target: REQ-031}
+      - {type: satisfies, target: REQ-010}
