@@ -944,6 +944,72 @@ pub fn cmd_check_workflows(
         }
     }
 
+    // never-skip guard jobs (REQ-028): each runs on every pull request and in
+    // the merge queue. No if: beyond always()/!cancelled(), no need that can
+    // be skipped, and a workflow trigger that gate (a) accepts.
+    for name in &cfg.workflows.never_skip_jobs {
+        r.n += 1;
+        let mut found = false;
+        for wf in &wfs {
+            for (jid, job) in entries(get(&wf.doc, "jobs")) {
+                if job_name(job, &jid) != *name && jid != *name {
+                    continue;
+                }
+                found = true;
+                let ctx = format!("never-skip {name}");
+                if let Some((code, detail)) = &wf.state {
+                    r.fail(
+                        "a",
+                        &ctx,
+                        &wf.file,
+                        &jid,
+                        &format!("never-skip-{code}"),
+                        detail.clone(),
+                    );
+                    continue;
+                }
+                if let Some(cond) = get(job, "if") {
+                    let c = py_str(cond).replace(['$', '{', '}'], "").trim().to_string();
+                    if c != "always()" && c != "!cancelled()" {
+                        r.fail(
+                            "b",
+                            &ctx,
+                            &wf.file,
+                            &jid,
+                            "never-skip-if",
+                            format!(
+                                "a guard job must not be skippable; its if: is `{}`",
+                                py_str(cond)
+                            ),
+                        );
+                        continue;
+                    }
+                }
+                let jobs = get(&wf.doc, "jobs");
+                let skippable_need = members(get(job, "needs").unwrap_or(&Yaml::Null))
+                    .into_iter()
+                    .find(|n| jobs.and_then(|j| get(j, n)).is_some_and(|nj| has(nj, "if")));
+                if let Some(n) = skippable_need {
+                    r.fail("b", &ctx, &wf.file, &jid, "never-skip-needs",
+                        format!("needs `{n}`, which has its own if: and can be skipped; the skip would propagate"));
+                    continue;
+                }
+                r.text
+                    .push(format!("    never-skip     {name}   [{}]", wf.file));
+            }
+        }
+        if !found {
+            r.fail(
+                "b",
+                &format!("never-skip {name}"),
+                "",
+                name,
+                "never-skip-missing",
+                "no job with this name or id in any workflow".into(),
+            );
+        }
+    }
+
     // (c) the classifier it reads fails OPEN
     if !classifier_outputs.is_empty() {
         let where_ = classifier_where

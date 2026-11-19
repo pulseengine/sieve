@@ -146,6 +146,11 @@ against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
   `continue-on-error`, no skip inherited through `needs:`. The
   `[workflows.job_outputs]` map (job to classes) is HAND-MAINTAINED;
 - (c) the classifier selects everything on push, merge_group, no base, a bad
-  base and an empty diff.
+  base and an empty diff;
+- never-skip guard jobs: `[workflows] never_skip_jobs` names jobs a guard
+  requires on every pull request (hardware runs, the evidence verifier's
+  negative control, proof checks, equivalence jobs); each must have no `if:`
+  beyond `always()`/`!cancelled()`, no skippable `needs:`, and a trigger gate
+  (a) accepts.
 
 License: Apache-2.0.
