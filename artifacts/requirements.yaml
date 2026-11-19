@@ -569,7 +569,21 @@ artifacts:
       before it runs, no GAP switch, and a deliberately divergent build that
       must go red. Eligible to count under O5 once O5 has an indicator
       script.
-    fields: {priority: should, category: constraint}
+    fields:
+      priority: should
+      category: constraint
+      progress: >
+        2026-11-20: the wasm32-wasip2 component builds unchanged. The Test job
+        runs all 55 paths-mode corpus cases under wasmtime v42.0.1 (pinned),
+        byte-identical to native. A divergent build fails 0/55 (checked
+        locally). Open:
+        (1) kiln 0.7.3 refuses the meld-fused module on 3 filesystem imports
+        (kiln#687);
+        (2) git mode fails open in the component, because gix 0.90 reads
+        objects through mmap, which WASI lacks; the 19 git-mode cases are
+        listed as not run;
+        (3) signing waits on sigil#395;
+        (4) the gale 400-commit run is not yet wired.
     links:
       - {type: satisfies, target: SSC-002}
 

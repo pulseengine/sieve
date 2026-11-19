@@ -40,6 +40,9 @@ fn private_dir() -> std::io::Result<PathBuf> {
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         h.write_u32(attempt);
         let d = base.join(format!("sieve-equivalence-{:016x}", h.finish()));
+        // mode is unix-only; WASI has no permission bits (its sandbox is the
+        // preopened directories), and the component never runs equivalence
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {

@@ -128,6 +128,47 @@ struct Run {
     detail: String,
 }
 
+/// The command that runs sieve for one invocation. Natively it is the built
+/// binary. With SIEVE_WASMTIME and SIEVE_WASM set it is the WASI component
+/// under that runtime (REQ-031): the tree is preopened as `.`, the scratch
+/// root at its own absolute path, and only the listed variables reach the
+/// guest. Native and component runs must produce the same bytes.
+fn component_mode() -> bool {
+    std::env::var_os("SIEVE_WASMTIME").is_some() && std::env::var_os("SIEVE_WASM").is_some()
+}
+
+fn sieve_cmd(dir: &Path, env: &[(&str, String)]) -> Command {
+    match (std::env::var("SIEVE_WASMTIME"), std::env::var("SIEVE_WASM")) {
+        (Ok(rt), Ok(wasm)) => {
+            let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("corpus");
+            let mut c = Command::new(rt);
+            c.env_clear()
+                .arg("run")
+                .arg("--dir")
+                .arg(format!("{}::.", dir.display()))
+                .arg("--dir")
+                .arg(format!("{0}::{0}", scratch.display()));
+            for (k, v) in env {
+                c.arg("--env").arg(format!("{k}={v}"));
+            }
+            c.arg(wasm).current_dir(dir);
+            c
+        }
+        _ => {
+            let mut c = Command::new(BIN);
+            c.env("PATH", NO_PATH)
+                .env_remove("GATE_PROBE_FILES")
+                .env_remove("SIEVE_FAULT")
+                .env_remove("GITHUB_OUTPUT")
+                .current_dir(dir);
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            c
+        }
+    }
+}
+
 fn run_classify(
     dir: &Path,
     cfg: &Path,
@@ -136,21 +177,41 @@ fn run_classify(
     all: &BTreeSet<String>,
 ) -> Result<Run, String> {
     // json
-    let mut cmd = Command::new(BIN);
-    cmd.env("PATH", NO_PATH);
+    let mut cmd = sieve_cmd(dir, env);
     cmd.arg("classify")
         .arg("--config")
         .arg(cfg)
         .args(["--format", "json"])
-        .args(args)
-        .current_dir(dir);
-    cmd.env_remove("GATE_PROBE_FILES")
-        .env_remove("SIEVE_FAULT")
-        .env_remove("GITHUB_OUTPUT");
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+        .args(args);
     let o = cmd.output().unwrap();
+    if component_mode() {
+        // the component must print the native binary's bytes exactly
+        let mut native = Command::new(BIN);
+        native
+            .env("PATH", NO_PATH)
+            .env_remove("GATE_PROBE_FILES")
+            .env_remove("SIEVE_FAULT")
+            .env_remove("GITHUB_OUTPUT")
+            .current_dir(dir)
+            .arg("classify")
+            .arg("--config")
+            .arg(cfg)
+            .args(["--format", "json"])
+            .args(args);
+        for (k, v) in env {
+            native.env(k, v);
+        }
+        let n = native.output().unwrap();
+        if n.stdout != o.stdout || n.status.code() != o.status.code() {
+            return Err(format!(
+                "component differs from native: exit {:?} vs {:?}\n--- native\n{}\n--- component\n{}",
+                n.status.code(),
+                o.status.code(),
+                String::from_utf8_lossy(&n.stdout),
+                String::from_utf8_lossy(&o.stdout)
+            ));
+        }
+    }
     let stderr = String::from_utf8_lossy(&o.stderr).to_string();
     if o.status.code() != Some(0) {
         return Err(format!("json run exited {:?}: {stderr}", o.status.code()));
@@ -187,20 +248,14 @@ fn run_classify(
         dir.file_name().unwrap().to_string_lossy()
     ));
     let _ = fs::remove_file(&out);
-    let mut cmd = Command::new(BIN);
-    cmd.env("PATH", NO_PATH);
+    let mut env2 = env.to_vec();
+    env2.push(("GITHUB_OUTPUT", out.to_string_lossy().into_owned()));
+    let mut cmd = sieve_cmd(dir, &env2);
     cmd.arg("classify")
         .arg("--config")
         .arg(cfg)
         .args(["--format", "github-output"])
-        .args(args)
-        .current_dir(dir);
-    cmd.env_remove("GATE_PROBE_FILES")
-        .env_remove("SIEVE_FAULT")
-        .env("GITHUB_OUTPUT", &out);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+        .args(args);
     let o2 = cmd.output().unwrap();
     if o2.status.code() != Some(0) {
         return Err(format!("github-output run exited {:?}", o2.status.code()));
@@ -418,13 +473,21 @@ fn corpus_every_case_selects_exactly_its_expected_set() {
     let only = std::env::var("SIEVE_CASE").ok();
     let mut failures = vec![];
     let mut n = 0;
+    let mut skipped = 0;
     for p in &cases {
         let name = p.file_stem().unwrap().to_string_lossy().into_owned();
         if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
             continue;
         }
-        n += 1;
         let case = load(p);
+        if component_mode() && case["input"]["mode"] != "paths" {
+            // gix reads objects through mmap, which WASI lacks: git mode
+            // fails open in the component (REQ-031 covers paths mode)
+            println!("skip {name}: git mode, not run in component mode");
+            skipped += 1;
+            continue;
+        }
+        n += 1;
         match check_case(&name, &case, &spec, &fixture, &scratch) {
             Ok(()) => println!("ok   {name}"),
             Err(e) => {
@@ -433,10 +496,19 @@ fn corpus_every_case_selects_exactly_its_expected_set() {
             }
         }
     }
-    println!("\n{}/{} corpus case(s) pass", n - failures.len(), n);
+    println!(
+        "\n{}/{} corpus case(s) pass ({skipped} git-mode case(s) not run)",
+        n - failures.len(),
+        n
+    );
     assert!(
-        only.is_some() || n == 74,
-        "expected 74 corpus cases, found {n}"
+        only.is_some() || n + skipped == 74,
+        "expected 74 corpus cases, found {}",
+        n + skipped
+    );
+    assert!(
+        only.is_some() || !component_mode() || n == 55,
+        "component mode must run all 55 paths-mode cases, ran {n}"
     );
     assert!(failures.is_empty(), "failing cases: {failures:?}");
 }
