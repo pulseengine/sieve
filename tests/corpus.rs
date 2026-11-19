@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_sieve");
+/// sieve runs with an empty PATH: it must start no `git` (or any other)
+/// process (REQ-024). A subprocess would fail and the git-mode cases would
+/// select the wrong set.
+const NO_PATH: &str = "/nonexistent-sieve-starts-no-subprocess";
 
 fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus")
@@ -133,6 +137,7 @@ fn run_classify(
 ) -> Result<Run, String> {
     // json
     let mut cmd = Command::new(BIN);
+    cmd.env("PATH", NO_PATH);
     cmd.arg("classify")
         .arg("--config")
         .arg(cfg)
@@ -183,6 +188,7 @@ fn run_classify(
     ));
     let _ = fs::remove_file(&out);
     let mut cmd = Command::new(BIN);
+    cmd.env("PATH", NO_PATH);
     cmd.arg("classify")
         .arg("--config")
         .arg(cfg)
@@ -339,6 +345,7 @@ fn check_case(
 
     if let Some(kind) = case["check"]["kind"].as_str() {
         let mut cmd = Command::new(BIN);
+        cmd.env("PATH", NO_PATH);
         cmd.arg("check-graph")
             .arg("--config")
             .arg(&cfg)
@@ -383,6 +390,7 @@ fn check_case(
     Ok(())
 }
 
+// rivet: verifies REQ-024
 // rivet: verifies REQ-001
 // rivet: verifies REQ-002
 // rivet: verifies REQ-003

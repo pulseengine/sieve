@@ -257,24 +257,10 @@ pub fn git_mode(
         return Verdict::all(cfg, "no base sha");
     }
     let head = head.unwrap_or("HEAD");
-    // --no-renames: a rename is a delete plus an add, and both are classified.
-    match crate::repo::git(
-        root,
-        &[
-            "diff",
-            "--name-only",
-            "--no-renames",
-            "-z",
-            &format!("{base}...{head}"),
-        ],
-    ) {
+    // A rename is a delete plus an add, and both are classified (gix, in-process).
+    match crate::gitrepo::diff_names(root, base, head) {
         Err(e) => Verdict::all(cfg, format!("git diff failed against {base}: {e}")),
-        Ok(out) => {
-            let paths: Vec<String> = out
-                .split('\0')
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect();
+        Ok(paths) => {
             if paths.is_empty() {
                 Verdict::all(cfg, "empty diff")
             } else {
