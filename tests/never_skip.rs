@@ -147,3 +147,36 @@ fn a_guard_job_cannot_be_skipped_or_emptied_indirectly() {
     let (code, c) = codes(&repo("ok-chain", &ok));
     assert_eq!(code, Some(0), "{c:?}");
 }
+
+// rivet: verifies REQ-028
+#[test]
+fn a_failed_need_or_an_emptied_matrix_cannot_skip_a_guard_job() {
+    let hw = "  hw:\n    name: Hardware run\n";
+    let steps = "    runs-on: x\n    steps:\n      - run: true\n";
+    let cases: Vec<(&str, String, &str)> = vec![
+        // a needs b with no if of its own: a FAILED b skips hw (implicit success())
+        ("need-without-always", format!("{BASE}{LINT}  a:\n{steps}{hw}    needs: [a]\n{steps}"), "never-skip-needs"),
+        (
+            "matrix-exclude",
+            format!("{BASE}{LINT}{hw}    strategy:\n      matrix:\n        board: [f4]\n        exclude:\n          - board: f4\n{steps}"),
+            "never-skip-matrix",
+        ),
+        ("strategy-expression", format!("{BASE}{LINT}{hw}    strategy: ${{{{ fromJSON(needs.c.outputs.s) }}}}\n{steps}"), "never-skip-matrix"),
+        (
+            "include-not-list",
+            format!("{BASE}{LINT}{hw}    strategy:\n      matrix:\n        include: ${{{{ fromJSON(needs.c.outputs.i) }}}}\n{steps}"),
+            "never-skip-matrix",
+        ),
+    ];
+    for (name, wf, want) in cases {
+        let (code, c) = codes(&repo(name, &wf));
+        assert_eq!(code, Some(1), "{name}: {c:?}");
+        assert!(
+            c.iter().any(|x| x == want),
+            "{name}: want {want}, got {c:?}"
+        );
+    }
+    let ok = format!("{BASE}{LINT}{hw}    strategy:\n      matrix:\n        include:\n          - board: f4\n{steps}");
+    let (code, c) = codes(&repo("ok-include", &ok));
+    assert_eq!(code, Some(0), "{c:?}");
+}

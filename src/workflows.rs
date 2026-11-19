@@ -310,26 +310,36 @@ fn never_skip_problem(
             "a guard job must not swallow its own failure".into(),
         ));
     }
-    if let Some(m) = get(job, "strategy").and_then(|st| get(st, "matrix")) {
-        match m {
-            Yaml::Hash(_) => {
-                for (k, v) in entries(Some(m)) {
-                    if k == "include" || k == "exclude" {
-                        continue;
-                    }
-                    if !matches!(v, Yaml::Array(a) if !a.is_empty()) {
-                        return Some((
-                            "never-skip-matrix".into(),
-                            format!("matrix axis `{k}` is not a non-empty literal list"),
-                        ));
-                    }
+    if let Some(st) = get(job, "strategy") {
+        let bad = |why: &str| Some(("never-skip-matrix".to_string(), why.to_string()));
+        if !matches!(st, Yaml::Hash(_)) {
+            return bad("strategy is not a literal mapping");
+        }
+        if let Some(m) = get(st, "matrix") {
+            if !matches!(m, Yaml::Hash(_)) {
+                return bad("the matrix is an expression, not a literal");
+            }
+            let mut combos = false;
+            for (k, v) in entries(Some(m)) {
+                match k.as_str() {
+                    // an exclude can remove every combination: fail closed
+                    "exclude" => return bad("a guard job's matrix must not use exclude"),
+                    "include" => match v {
+                        Yaml::Array(a) => combos |= !a.is_empty(),
+                        _ => return bad("matrix include is not a literal list"),
+                    },
+                    _ => match v {
+                        Yaml::Array(a) if !a.is_empty() => combos = true,
+                        _ => {
+                            return bad(&format!(
+                                "matrix axis `{k}` is not a non-empty literal list"
+                            ))
+                        }
+                    },
                 }
             }
-            _ => {
-                return Some((
-                    "never-skip-matrix".into(),
-                    "the matrix is an expression, not a literal".into(),
-                ));
+            if !combos {
+                return bad("the matrix has no combination");
             }
         }
     }
@@ -346,6 +356,14 @@ fn never_skip_problem(
     // every job it needs, transitively, must exist and be unconditional
     let mut seen = BTreeSet::new();
     let mut todo: Vec<String> = get(job, "needs").map(members).unwrap_or_default();
+    // A failed need skips a job whose if: is the implicit success(), so a
+    // guard job with needs must itself be always() or !cancelled().
+    if !todo.is_empty() && !get(job, "if").is_some_and(unconditional_if) {
+        return Some((
+            "never-skip-needs".into(),
+            "a guard job with needs: must have if: always() or !cancelled(); otherwise a failed need skips it".into(),
+        ));
+    }
     while let Some(n) = todo.pop() {
         if n == jid || !seen.insert(n.clone()) {
             continue;
