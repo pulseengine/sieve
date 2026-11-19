@@ -366,7 +366,7 @@ artifacts:
   - id: REQ-022
     type: requirement
     title: Evaluate bazel-diff or target-determinator for the Bazel affected set
-    status: draft
+    status: implemented
     description: >
       Survey input. Compare static Bazel graph hashing with sieve's literal
       srcs and query snapshots on a Bazel consumer (rules_wasm_component,
@@ -374,7 +374,10 @@ artifacts:
       MODULE change still selects everything (bazel-diff documents its
       possible-readers output as incomplete).
     release: v0.3.0
-    fields: {priority: could, category: functional}
+    fields:
+      priority: could
+      category: functional
+      review: 'evaluated for real on 2026-11-19 night: bazel-diff on rules_wasm_component, 30 commits; author-run; the satisfying decision holds the numbers'
     links:
       - {type: constraint-satisfies, target: SC-006}
 
