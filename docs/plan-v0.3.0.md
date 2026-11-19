@@ -16,6 +16,15 @@ the draft. This version applies its findings.
 - No North Star objective measures CI capacity. sieve serves the North Star
   through objective guards and O5, not through a capacity indicator.
 
+## Status (2026-11-20)
+
+- Owner ruling (2026-11-19, late, via pulseengine.eu): bets A, B, D and E go
+  straight to work; Bet C stays queued (it narrows REQ-005).
+- Bet A: merged, PR #11 (`[workflows] never_skip_jobs`).
+- Bet B: sieve's part is docs/planted-defects.md (PD-01..14, WD-01..06).
+- Bet E: `cargo build --target wasm32-wasip2` succeeds unchanged (5.2 MB
+  component, gix included).
+
 Each bet below says what sieve ships (decided by sieve's own CI) and, separately,
 which fleet outcome it enables (decided by other repositories). Each requirement
 belongs to exactly one bet.
@@ -94,6 +103,9 @@ before implementation (queued as a needs-decision notice).
 - over 30 merged gale pull requests after its switch, N is at least 30;
 - observed misses are 0 of N;
 - mean estimated saving is at least 20 runner-min/PR (one threshold, no gap);
+- the report states, per adopter, whether a skipped class still runs before
+  merge (merge queue: merge_group runs everything) or only after it (gale has
+  no merge queue, so its skipped classes first run on push to main);
 - the cross-class check fails on spar's pre-fix draft and on each seeded pattern, and passes after the fix.
 
 **Kill:**
@@ -116,13 +128,19 @@ the one honest O4 link.
 - the classify/graph core as a WASI component;
 - a sieve CI job that runs every paths-mode corpus case and gale's last 400 commits under kiln and under wasmtime;
 - JSON byte-identical to the native binary;
-- the component signed by the chain, with the signature verified before it runs.
+- the component signed by the chain, with the signature verified before it runs;
+- a `north-star-input.json` release asset (objective O5, one fact for the
+  sieve gate; schema in pulseengine.eu `data/north-star/input.schema.json`,
+  seam pulseengine.eu#393) listed in the cosign-signed SHA256SUMS.
 
 **Acceptance:**
 - the equivalence job runs in CI, and a skipped kiln leg counts as failure;
 - a deliberately divergent build goes red;
 - no GAP switch exists;
-- at least one real gate runs the signed component: sieve's own CI, or gale's classify step.
+- at least one real gate runs the signed component: sieve's own CI, or gale's classify step;
+- a one-bit-flipped component fails signature verification in CI. Today
+  `wsc verify-chain` passes such a component (sigil#395), so `signed` is
+  reported false until sigil#395 is fixed and this control turns red.
 
 **Kill:**
 - kiln cannot run it with a preopened directory;
@@ -131,6 +149,10 @@ the one honest O4 link.
 
 **Claim limit:** the component is eligible to count under O5 once O5 has an
 indicator script; O5 is unmeasured today.
+
+**Dependencies:** kiln preopens and a pinnable release; sigil#395 fixed for
+the `signed` fact; wasmtime is not in the pinned pulseengine layer, so the
+differential leg needs a layer that carries it or a pinned direct download.
 
 **Requirements:** REQ-031 (new), REQ-010, REQ-024.
 

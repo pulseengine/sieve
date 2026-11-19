@@ -85,7 +85,10 @@ fn run(d: &Path, cfg: &Path, old: &Path, extra: &[&str]) -> (Option<i32>, serde_
         .arg(cfg)
         .arg("--root")
         .arg(d)
-        .arg("--old")
+        // through /bin/sh, not exec'd: another test thread's fork can hold a
+        // writable fd on a just-written script, and Linux then refuses to
+        // exec it (ETXTBSY, seen in CI on PR #12)
+        .args(["--old", "/bin/sh", "--old-arg"])
         .arg(old)
         .args(["--ref", "HEAD", "--commits", "10", "--format", "json"])
         .args(extra)
