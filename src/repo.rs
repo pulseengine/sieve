@@ -107,12 +107,22 @@ impl Repo {
         out
     }
 
-    /// The repository's files: `git ls-files` when git is in use, else a walk.
+    /// The repository's files. In git mode the index (an error is an error).
+    /// Otherwise the index too when the tree is a git repository (read
+    /// in-process, no git call), so untracked residue such as worktrees,
+    /// build logs and bytecode is not read; a walk when there is no .git or
+    /// its index cannot be read. The walk lists a superset, so the fallback
+    /// can only widen what the docs rule counts as naming a file.
     pub fn tracked(&self) -> Result<Vec<String>, String> {
-        if !self.git {
-            return Ok(self.walk(""));
+        if self.git {
+            return crate::gitrepo::index_paths(&self.root);
         }
-        crate::gitrepo::index_paths(&self.root)
+        if self.root.join(".git").exists() {
+            if let Ok(paths) = crate::gitrepo::index_paths(&self.root) {
+                return Ok(paths);
+            }
+        }
+        Ok(self.walk(""))
     }
 
     /// Glob a pattern of `*`/`?` components against the tree.

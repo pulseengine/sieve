@@ -51,11 +51,11 @@ check.
 - any internal failure: the reason starts with `internal:` and a GitHub
   `::warning::` is printed.
 
-Without git (`--paths`, `--paths-file`, `GATE_PROBE_FILES`, `graph`) sieve
-walks the tree instead of `git ls-files`, so the docs rule also reads
-untracked and gitignored files (a `__pycache__/*.pyc`, a build output). That
-can only select more, never less, but on a dev machine it can over-select
-where CI would not.
+With `--paths`, `--paths-file` or `GATE_PROBE_FILES` sieve makes no git call.
+When the tree is a git repository it still lists files from the index (read
+in-process), so untracked residue (agent worktrees, build logs, bytecode) is
+not read. Only when there is no `.git` does it walk the tree, and then the docs
+rule also reads untracked files; that can only select more, never less.
 
 A path with a control character, `..`, `.` or an empty component is malformed
 and selects everything; log lines escape `%`, CR and LF so a path cannot forge
