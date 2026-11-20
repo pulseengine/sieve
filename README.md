@@ -86,7 +86,10 @@ anyway. The edit still selects everything when:
 - a job running `sieve classify` changed;
 - a changed job changed `if`, `needs`, `continue-on-error`, `strategy`, `uses`
   or `outputs`, or a step's `if`/`continue-on-error`;
-- an affected job has a step gated on job or step outputs;
+- a `needs:` entry is not exactly a job id (GitHub matches it ignoring case);
+- a step with `continue-on-error` changed;
+- an affected job has a step `if:` reading any context but `github` or
+  `runner`, or a `strategy` computed from an expression;
 - a job in the closure has any `if:` other than the exact classifier form or
   `always()`/`!cancelled()`;
 - the file uses a YAML merge key;
@@ -96,6 +99,12 @@ anyway. The edit still selects everything when:
 `--paths` has no base version, so there `.github/` still selects everything.
 Composite actions, reusable workflows and everything else under `.github/`
 also always select everything.
+
+Scoping decides only what this pull request runs. It does not re-check that an
+edited job's gate still covers what the job now builds: an edit that makes a
+b-gated job build class a's code is scoped to b, and later a-only changes skip
+that job. `check-workflows` gate (d) catches this for `cargo -p` and
+`--manifest-path`; the false-skip controls cover the rest.
 
 ## sieve.toml
 

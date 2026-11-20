@@ -509,6 +509,16 @@ fn gate_b_a_skip_cannot_come_in_through_needs_steps_or_matrix() {
             ONE, "b", "step-if-output",
         ),
         (
+            "step-if-reads-needs-by-index-and-case",
+            steps("    steps:\n      - if: ${{ NEEDS['changes'].outputs.zephyr == 'true' }}\n        run: 'true'\n"),
+            ONE, "b", "step-if-output",
+        ),
+        (
+            "step-if-reads-step-output-by-index",
+            steps("    steps:\n      - id: q\n        run: echo run=false >> $GITHUB_OUTPUT\n      - if: steps['q'].Outputs.run == 'true'\n        run: 'true'\n"),
+            ONE, "b", "step-if-output",
+        ),
+        (
             "continue-on-error-on-the-job",
             W {
                 gate_if: None,

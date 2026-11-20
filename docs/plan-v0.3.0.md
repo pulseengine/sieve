@@ -23,7 +23,7 @@ the draft. This version applies its findings.
 - Owner option dialog (2026-11-20): Bet C approved, start now; REQ-027 in
   v0.3.0; v0.3.0 is tagged after #13, Bet C and REQ-027 have merged.
 - Bet C: REQ-030 implemented behind `[workflows] scope_leaf_edits` (opt-in,
-  git mode only), with 23 negative-control edits in tests/leaf_scope.rs.
+  git mode only), with 28 negative-control edits in tests/leaf_scope.rs.
 - Bet A: merged, PR #11 (`[workflows] never_skip_jobs`).
 - Bet B: sieve's part is docs/planted-defects.md (PD-01..14, WD-01..06).
 - Bet E: `cargo build --target wasm32-wasip2` succeeds unchanged (5.2 MB

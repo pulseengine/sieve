@@ -929,7 +929,11 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
         );
     }
     let steps = list(get(job, "steps"));
-    let step_if = Regex::new(r"\bneeds\.|\bsteps\.[A-Za-z0-9_-]+\.outputs\b").unwrap();
+    // Contexts are case-insensitive and also read by index (needs['x']).
+    let step_if = Regex::new(
+        r"(?i)\bneeds\s*[.\[]|\bsteps\s*(\.\s*[A-Za-z0-9_-]+|\[[^\]]*\])\s*\.\s*outputs\b|\btojson\s*\(\s*(needs|steps)\s*\)",
+    )
+    .unwrap();
     for (i, st) in steps.iter().enumerate() {
         let label = get_nn(st, "name")
             .map(py_str)
@@ -1125,13 +1129,24 @@ fn has_merge_key(y: &Yaml) -> bool {
     }
 }
 
-/// Each step's `if:` and `continue-on-error:`, for the steps that have one.
+/// The steps that carry an `if:` or `continue-on-error:`: the `if:` of each,
+/// and the whole step where it has `continue-on-error:` (moving a command into
+/// or out of such a step changes whether its failure fails the job).
 fn step_gates(job: &Yaml) -> Vec<(Option<&Yaml>, Option<&Yaml>)> {
     list(get(job, "steps"))
         .into_iter()
-        .map(|s| (get(s, "if"), get(s, "continue-on-error")))
-        .filter(|(a, b)| a.is_some() || b.is_some())
+        .filter(|s| has(s, "if") || has(s, "continue-on-error"))
+        .map(|s| (get(s, "if"), has(s, "continue-on-error").then_some(s)))
         .collect()
+}
+
+/// A step `if:` that reads a context an edit (or another job) can change:
+/// anything but `github`, `runner` and the status functions. Contexts are
+/// case-insensitive and also read as `needs['x']` or `toJSON(needs)`.
+fn step_if_reads_mutable(cond: &str) -> bool {
+    Regex::new(r"(?i)\b(needs|steps|env|jobs|matrix|strategy|inputs|vars|secrets)\b")
+        .unwrap()
+        .is_match(cond)
 }
 
 /// REQ-030: the classes a modification of the leaf workflow `file` selects,
@@ -1205,6 +1220,17 @@ pub fn leaf_scope(
     if cls.keys().ne(bcls.keys()) {
         return Err(format!("{file} changed which jobs run `sieve classify`"));
     }
+    // GitHub matches `needs:` case-insensitively; the closures below match
+    // exactly, so an entry that is not exactly a job id selects everything.
+    for m in [&bmap, &hmap] {
+        for (jid, job) in m {
+            if let Some(n) = needs_of(job).into_iter().find(|n| !m.contains_key(n)) {
+                return Err(format!(
+                    "{file}: job {jid} needs `{n}`, which is not exactly a job id"
+                ));
+            }
+        }
+    }
     let mut changed: BTreeSet<String> = BTreeSet::new();
     for (jid, hjob) in &hmap {
         // An added job is a changed job with nothing to compare: no job in
@@ -1253,15 +1279,25 @@ pub fn leaf_scope(
         }
         affected.extend(grown);
     }
-    let step_if = Regex::new(r"\bneeds\.|\bsteps\.[A-Za-z0-9_-]+\.outputs\b").unwrap();
     for j in &affected {
         if cls.contains_key(j) {
             return Err(format!("{file}: classifier job {j} needs a changed job"));
         }
+        // A matrix computed from an expression (fromJSON(needs.x.outputs.m))
+        // can come out empty, and an empty matrix reports the job skipped.
+        let mut strategy = String::new();
+        if let Some(s) = get(hmap[j], "strategy") {
+            flatten(s, &mut strategy);
+        }
+        if strategy.contains("${{") {
+            return Err(format!(
+                "{file}: job {j} has a strategy computed from an expression"
+            ));
+        }
         for st in list(get(hmap[j], "steps")) {
-            if step_if.is_match(&get(st, "if").map(py_str).unwrap_or_default()) {
+            if step_if_reads_mutable(&get(st, "if").map(py_str).unwrap_or_default()) {
                 return Err(format!(
-                    "{file}: job {j} has a step gated on job or step outputs"
+                    "{file}: job {j} has a step gated on a context other than github or runner"
                 ));
             }
         }

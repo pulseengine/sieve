@@ -408,7 +408,7 @@ fn a_step_gated_on_outputs_in_a_changed_job_selects_everything() {
     );
     assert_run_all(
         &classify_git(&d, &base),
-        "step gated on job or step outputs",
+        "step gated on a context other than github or runner",
     );
 }
 
@@ -473,4 +473,88 @@ fn scoping_is_opt_in_and_needs_git_mode() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_run_all(&v, "needs the base version");
+}
+
+/// A base where `from` is already replaced by `to`, then an edit of `make b`.
+fn edit_b_on(name: &str, from: &str, to: &str) -> serde_json::Value {
+    let old = ci();
+    assert!(old.contains(from), "fixture lacks {from:?}");
+    let old = old.replacen(from, to, 1);
+    let new = old.replacen("make b", "make b V=1", 1);
+    let (d, base) = history(
+        name,
+        CFG_ON,
+        &[(".github/workflows/ci.yml", old)],
+        &[(".github/workflows/ci.yml", Some(new))],
+    );
+    classify_git(&d, &base)
+}
+
+// rivet: verifies REQ-030
+#[test]
+fn review_holes_select_everything() {
+    // GitHub matches needs: case-insensitively: report needs JB is report
+    // needs jb, and the exact-match closure would miss it.
+    let v = edit_b_on("rev-needs-case", "needs: [jb]", "needs: [JB]");
+    assert_run_all(&v, "not exactly a job id");
+    // A dependent's step reads the changed job through index syntax.
+    let v = edit_b_on(
+        "rev-needs-index",
+        "      - run: make report\n",
+        "      - run: make report\n        if: ${{ needs['jb'].outputs.v == '1' }}\n",
+    );
+    assert_run_all(&v, "context other than github or runner");
+    // A step switched off through job-level env, its if: untouched.
+    let v = edit_b_on(
+        "rev-env",
+        "      - run: make b\n",
+        "      - run: make b\n        if: ENV.RUN_B == 'true'\n",
+    );
+    assert_run_all(&v, "context other than github or runner");
+    // A step if: on github or a status function stays scoped.
+    let v = edit_b_on(
+        "rev-github-if",
+        "      - run: make b\n",
+        "      - run: make b\n        if: github.event_name == 'pull_request'\n      - run: report\n        if: failure()\n",
+    );
+    assert_scoped(&v, &["b"]);
+
+    // Swapping commands across a continue-on-error step keeps the list of
+    // step if:/continue-on-error values but neuters the job.
+    let two = "      - run: make b\n      - run: make lint-b\n        continue-on-error: true\n";
+    let old = ci().replacen("      - run: make b\n", two, 1);
+    let new = old.replacen(
+        two,
+        "      - run: make lint-b\n      - run: make b\n        continue-on-error: true\n",
+        1,
+    );
+    let (d, base) = history(
+        "rev-coe-swap",
+        CFG_ON,
+        &[(".github/workflows/ci.yml", old)],
+        &[(".github/workflows/ci.yml", Some(new))],
+    );
+    assert_run_all(
+        &classify_git(&d, &base),
+        "a step's `if:` or `continue-on-error:`",
+    );
+}
+
+// rivet: verifies REQ-030
+#[test]
+fn a_dependent_with_an_expression_matrix_selects_everything() {
+    // report's matrix comes from jb's output: an edit to jb can empty it.
+    let v = edit_b_on(
+        "rev-matrix-expr",
+        "  report:\n    needs: [jb]\n",
+        "  report:\n    needs: [jb]\n    strategy:\n      matrix:\n        x: ${{ fromJSON(needs.jb.outputs.m) }}\n",
+    );
+    assert_run_all(&v, "strategy computed from an expression");
+    // A literal matrix stays scoped.
+    let v = edit_b_on(
+        "rev-matrix-literal",
+        "  report:\n    needs: [jb]\n",
+        "  report:\n    needs: [jb]\n    strategy:\n      matrix:\n        x: [1, 2]\n",
+    );
+    assert_scoped(&v, &["b"]);
 }
