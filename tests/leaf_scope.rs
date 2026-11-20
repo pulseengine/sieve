@@ -450,6 +450,12 @@ fn scoping_is_opt_in_and_needs_git_mode() {
         + "[workflows]\nscope_leaf_edits = true\n";
     let v = edit("own-run-all", &cfg, "make a", "make a V=1");
     assert_run_all(&v, "is CI, toolchain");
+    // So does an adopter-written `.github/` prefix, though it is also built in.
+    let cfg = format!("{CFG_ON}[run_all]\nprefixes = [\".github/\"]\n");
+    let cfg = cfg.replacen("[workflows]\nscope_leaf_edits = true\n", "", 1)
+        + "[workflows]\nscope_leaf_edits = true\n";
+    let v = edit("own-github-prefix", &cfg, "make a", "make a V=1");
+    assert_run_all(&v, "is CI, toolchain");
 
     // --paths has no base version to compare.
     let (d, _) = history(

@@ -47,7 +47,7 @@ pub fn is_run_all(cfg: &Config, p: &str) -> bool {
 
 /// Whether `p` is a run-all path for a reason other than the run-all prefix
 /// `skip_prefix` or basename `skip_base` (REQ-030 narrows only `.github/`,
-/// REQ-027 only `Cargo.lock`).
+/// REQ-027 only `Cargo.lock`). An entry the adopter wrote is never skipped.
 fn run_all_except(
     cfg: &Config,
     p: &str,
@@ -57,13 +57,13 @@ fn run_all_except(
     let base = basename(p);
     cfg.run_all_prefixes
         .iter()
-        .filter(|x| Some(x.as_str()) != skip_prefix)
+        .filter(|x| Some(x.as_str()) != skip_prefix || cfg.adopter_run_all_prefixes.contains(x))
         .any(|x| p.starts_with(x.as_str()))
         || cfg.run_all_files.iter().any(|x| x == p)
         || cfg
             .run_all_basenames
             .iter()
-            .filter(|x| Some(x.as_str()) != skip_base)
+            .filter(|x| Some(x.as_str()) != skip_base || cfg.adopter_run_all_basenames.contains(x))
             .any(|x| x == base)
         || cfg.run_all_suffixes.iter().any(|x| p.ends_with(x.as_str()))
         || p.split('/')
@@ -197,6 +197,9 @@ fn nested_lock(repo: &Repo, cfg: &Config, p: &str, g: &Graph) -> Option<Result<(
             "no class's Cargo walk reaches the workspace that owns it".into(),
         ));
     }
+    if let Err(why) = members_claimed(repo, p, g) {
+        return Some(Err(why));
+    }
     match bazel_names(repo, p) {
         Ok(None) => Some(Ok(())),
         Ok(Some(f)) => Some(Err(format!(
@@ -206,19 +209,69 @@ fn nested_lock(repo: &Repo, cfg: &Config, p: &str, g: &Graph) -> Option<Result<(
     }
 }
 
-/// The first tracked Bazel file (MODULE.bazel*, WORKSPACE*, BUILD, BUILD.bazel,
-/// *.bzl) that names lockfile `p`: by path, by label `//dir:Cargo.lock`, or as
-/// `Cargo.lock` from a BUILD file in the same directory.
-fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
+/// Every package that builds with lockfile `p` (each tracked manifest under
+/// its directory whose Cargo workspace is that directory's) is claimed by
+/// some class, so the selection covers every build the lock pins. A member
+/// list reaching outside the directory fails.
+fn members_claimed(repo: &Repo, p: &str, g: &Graph) -> Result<(), String> {
     let dir = dirname(p);
-    let label = format!("//{dir}:Cargo.lock");
+    let root = format!("{dir}/Cargo.toml");
+    let doc: toml::Value = repo
+        .read(&root)
+        .ok()
+        .and_then(|t| toml::from_str(&t).ok())
+        .ok_or_else(|| format!("{root} does not read as TOML"))?;
+    let outside = doc
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|m| {
+            m.iter()
+                .filter_map(toml::Value::as_str)
+                .any(|s| s.split('/').any(|c| c == "..") || s.starts_with('/'))
+        });
+    if outside {
+        return Err(format!("{root} lists a member outside its directory"));
+    }
+    let prefix = format!("{dir}/");
+    for f in repo.tracked()? {
+        if !f.starts_with(&prefix) || basename(&f) != "Cargo.toml" || f == root {
+            continue;
+        }
+        if graph::cargo_workspace_of(repo, &f).as_deref() != Some(root.as_str()) {
+            continue;
+        }
+        if !g.values().any(|cg| cg.claims_path(&f)) {
+            return Err(format!("workspace member {f} is claimed by no class"));
+        }
+    }
+    Ok(())
+}
+
+/// The first tracked Bazel or Nix file that may name lockfile `p`. Files:
+/// BUILD, MODULE.bazel*, WORKSPACE*, and anything ending in .bazel, .bzl,
+/// .star or .nix. A file may name `p` when it contains the path; a label for
+/// it from any package above it (`//:a/b/Cargo.lock`, `//a:b/Cargo.lock`,
+/// `//a/b:Cargo.lock`); both `Cargo.lock` and the directory (a label built
+/// by concatenation); or, for a BUILD file at or above its directory, `.lock`
+/// at all (a relative label or a glob such as `*.lock`). Over-matching only
+/// selects more.
+fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
+    let parts: Vec<&str> = p.split('/').collect();
+    let labels: Vec<String> = (0..parts.len())
+        .map(|i| format!("//{}:{}", parts[..i].join("/"), parts[i..].join("/")))
+        .collect();
+    let dir = dirname(p);
     for f in repo.tracked()? {
         let b = basename(&f);
-        let build = b == "BUILD" || b == "BUILD.bazel";
+        let build = b == "BUILD" || (b.starts_with("BUILD.") && b.ends_with(".bazel"));
         if !(build
             || b.starts_with("MODULE.bazel")
             || b.starts_with("WORKSPACE")
-            || b.ends_with(".bzl"))
+            || b.ends_with(".bazel")
+            || b.ends_with(".bzl")
+            || b.ends_with(".star")
+            || b.ends_with(".nix"))
         {
             continue;
         }
@@ -227,9 +280,13 @@ fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("read {f}: {e}")),
         };
+        let fdir = dirname(&f);
+        let above = fdir.is_empty() || dir == fdir || dir.starts_with(&format!("{fdir}/"));
         if text.contains(p)
-            || text.contains(&label)
-            || (build && dirname(&f) == dir && text.contains("Cargo.lock"))
+            || labels.iter().any(|l| text.contains(l.as_str()))
+            || (build && above && text.contains(".lock"))
+            // a label built by concatenation: "//dir" + ":Cargo.lock"
+            || (text.contains("Cargo.lock") && text.contains(dir))
         {
             return Ok(Some(f));
         }
@@ -317,12 +374,22 @@ pub fn classify_revs(
             if let Some(r) = nested_lock(repo, cfg, p, g) {
                 match r {
                     Ok(()) => {
-                        // every class that claims it, the Cargo walks first
-                        for (c, cg) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
+                        // Every class that claims it, and every class that
+                        // claims anything inside its workspace: the lock pins
+                        // every member's build, walked or hand-claimed.
+                        let ws = format!("{}/", dirname(p));
+                        for (c, cg) in g.iter() {
+                            let inside = cg.claims.keys().find(|k| k.starts_with(&ws));
                             if let Some((claim, via)) = cg.claim_of(p) {
                                 v.explain.entry(c.clone()).or_default().push(
                                     serde_json::json!({"path": p, "claim": claim, "via": via}),
                                 );
+                            } else if let Some(k) = inside {
+                                v.explain.entry(c.clone()).or_default().push(
+                                    serde_json::json!({"path": p, "claim": k, "via": "cargo-lock-workspace"}),
+                                );
+                            } else {
+                                continue;
                             }
                             v.classes.insert(c.clone(), true);
                         }

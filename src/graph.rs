@@ -260,10 +260,18 @@ impl CargoWalk<'_> {
             if wr != manifest {
                 cg.add(wr.clone(), "cargo");
             }
-            // REQ-027: a nested workspace's own lockfile pins this build. The
-            // repository-root Cargo.lock stays a built-in run-all path.
-            if wr != "Cargo.toml" {
-                let lock = format!("{}/Cargo.lock", dirname(wr));
+        }
+        // REQ-027: the lockfile of the workspace Cargo really uses (exclude
+        // honoured) pins this build; the root Cargo.lock stays built-in
+        // run-all. Only from a root walk: a crate reached as a path dependency
+        // builds with its dependant's lock, not its own workspace's.
+        if as_root {
+            let cw = cargo_workspace(repo, &mdir, &doc);
+            if let Some(w) = cw.as_ref().filter(|w| *w != manifest) {
+                cg.add(w.clone(), "cargo");
+            }
+            if let Some(cw) = cw.filter(|w| w != "Cargo.toml") {
+                let lock = format!("{}/Cargo.lock", dirname(&cw));
                 if repo.is_file(&lock) {
                     cg.add(lock, "cargo-lock");
                 }
@@ -470,6 +478,18 @@ impl CargoWalk<'_> {
 
 /// The nearest manifest at or above `mdir` that declares [workspace].
 fn enclosing_workspace(repo: &Repo, mdir: &str, doc: &Value) -> Option<String> {
+    workspace_root(repo, mdir, doc, false)
+}
+
+/// The workspace root Cargo uses for the package in `mdir`: like
+/// [`enclosing_workspace`], but a root whose `exclude` covers the package is
+/// skipped and the search goes on upward, as Cargo does (REQ-027 picks the
+/// lockfile from this).
+fn cargo_workspace(repo: &Repo, mdir: &str, doc: &Value) -> Option<String> {
+    workspace_root(repo, mdir, doc, true)
+}
+
+fn workspace_root(repo: &Repo, mdir: &str, doc: &Value, honour_exclude: bool) -> Option<String> {
     if doc.get("workspace").is_some() {
         return Some(if mdir.is_empty() {
             "Cargo.toml".into()
@@ -499,7 +519,7 @@ fn enclosing_workspace(repo: &Repo, mdir: &str, doc: &Value) -> Option<String> {
         };
         if let Ok(text) = repo.read(&m) {
             if let Ok(v) = toml::from_str::<Value>(&text) {
-                if v.get("workspace").is_some() {
+                if v.get("workspace").is_some() && !(honour_exclude && excludes(&v, &d, mdir)) {
                     return Some(m);
                 }
             }
@@ -1330,6 +1350,39 @@ pub fn bazel_fingerprint(repo: &Repo, files: &[String]) -> String {
         h.update(b"\0");
     }
     format!("{:x}", h.finalize())
+}
+
+/// Whether the `[workspace] exclude` of the root manifest in `root_dir`
+/// covers the package directory `mdir`.
+fn excludes(root: &Value, root_dir: &str, mdir: &str) -> bool {
+    let rel = if root_dir.is_empty() {
+        mdir
+    } else {
+        match mdir
+            .strip_prefix(root_dir)
+            .and_then(|r| r.strip_prefix('/'))
+        {
+            Some(r) => r,
+            None => return false,
+        }
+    };
+    root.get("workspace")
+        .and_then(|w| w.get("exclude"))
+        .and_then(Value::as_array)
+        .is_some_and(|ex| {
+            ex.iter().filter_map(Value::as_str).any(|e| {
+                let e = e.trim_end_matches('/');
+                let e = e.strip_prefix("./").unwrap_or(e);
+                rel == e || rel.starts_with(&format!("{e}/"))
+            })
+        })
+}
+
+/// The workspace root manifest Cargo uses for `manifest` (exclude honoured),
+/// if it reads and parses (REQ-027 counts a nested workspace's members).
+pub fn cargo_workspace_of(repo: &Repo, manifest: &str) -> Option<String> {
+    let doc = toml::from_str::<Value>(&repo.read(manifest).ok()?).ok()?;
+    cargo_workspace(repo, dirname(manifest), &doc)
 }
 
 #[cfg(test)]

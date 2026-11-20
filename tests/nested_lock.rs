@@ -188,3 +188,200 @@ fn check_graph_accepts_the_lock_claims() {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+// rivet: verifies REQ-027
+#[test]
+fn a_lock_selects_every_class_that_claims_inside_its_workspace() {
+    // m2 is a second member of nested/ws that no Cargo walk reaches, hand-
+    // claimed by h2: the lock pins its build too.
+    let cfg = format!("{CFG}[class.h2]\nhand = [\"nested/ws/m2/\"]\n");
+    let d = tree(
+        "whole-workspace",
+        &cfg,
+        &[
+            (
+                "nested/ws/Cargo.toml",
+                "[workspace]\nmembers = [\"m\", \"m2\"]\n",
+            ),
+            (
+                "nested/ws/m2/Cargo.toml",
+                "[package]\nname = \"m2\"\nversion = \"0.1.0\"\n",
+            ),
+            ("nested/ws/m2/src/lib.rs", "\n"),
+        ],
+    );
+    let v = classify(&d, "nested/ws/Cargo.lock");
+    assert_eq!(v["run_all"], false, "{v}");
+    assert_eq!(selected(&v), ["h2", "n"], "{v}");
+}
+
+// rivet: verifies REQ-027
+#[test]
+fn more_bazel_reference_forms_select_everything() {
+    for (name, file, text) in [
+        (
+            "label-from-parent",
+            "MODULE.bazel",
+            "lock = \"//:standalone/Cargo.lock\"\n",
+        ),
+        (
+            "label-mid",
+            "x.bzl",
+            "L = Label(\"@@//nested:ws/Cargo.lock\")\n",
+        ),
+        (
+            "glob-in-ancestor-build",
+            "BUILD.bazel",
+            "filegroup(srcs = glob([\"**/Cargo.lock\"]))\n",
+        ),
+        (
+            "star-file",
+            "tools/deps.star",
+            "L = \"standalone/Cargo.lock\"\n",
+        ),
+        (
+            "other-bazel-suffix",
+            "cargo.MODULE.bazel",
+            "L = \"//standalone:Cargo.lock\"\n",
+        ),
+    ] {
+        let d = tree(name, CFG, &[(file, text)]);
+        let lock = if name == "label-mid" || name == "glob-in-ancestor-build" {
+            "nested/ws/Cargo.lock"
+        } else {
+            "standalone/Cargo.lock"
+        };
+        assert_run_all(&classify(&d, lock), file);
+    }
+    // A BUILD file in a sibling directory that mentions some Cargo.lock does
+    // not name this one.
+    let d = tree(
+        "sibling-build",
+        CFG,
+        &[("other/BUILD.bazel", "exports_files([\"Cargo.lock\"])\n")],
+    );
+    assert_eq!(selected(&classify(&d, "standalone/Cargo.lock")), ["s"]);
+}
+
+// rivet: verifies REQ-027
+#[test]
+fn an_adopter_cargo_lock_basename_keeps_every_lock_run_all() {
+    let cfg = format!("{CFG}[run_all]\nbasenames = [\"Cargo.lock\"]\n");
+    let d = tree("adopter-basename", &cfg, &[]);
+    assert_run_all(&classify(&d, "nested/ws/Cargo.lock"), "is CI, toolchain");
+}
+
+// rivet: verifies REQ-027
+#[test]
+fn cold_review_layouts_pick_cargos_lock_or_select_everything() {
+    // 1. nested/ws excludes tool, so Cargo builds tool with the ROOT
+    //    workspace's lock (the root lists it). tool's walk must not claim
+    //    nested/ws/Cargo.lock; nested/ws/Cargo.lock then selects only n.
+    let cfg = format!("{CFG}[class.t]\ncargo = [\"nested/ws/tool/Cargo.toml\"]\n");
+    let d = tree(
+        "exclude",
+        &cfg,
+        &[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"a\", \"nested/ws/tool\"]\nexclude = [\"standalone\"]\n",
+            ),
+            (
+                "nested/ws/Cargo.toml",
+                "[workspace]\nmembers = [\"m\"]\nexclude = [\"tool\"]\n",
+            ),
+            (
+                "nested/ws/tool/Cargo.toml",
+                "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n",
+            ),
+            ("nested/ws/tool/src/main.rs", "fn main() {}\n"),
+        ],
+    );
+    let v = classify(&d, "nested/ws/Cargo.lock");
+    assert_eq!(v["run_all"], false, "{v}");
+    assert_eq!(v["classes"]["n"], true, "{v}");
+    // t is selected only for its claims inside nested/ws, not through the lock.
+    assert_ne!(v["explain"]["t"][0]["via"], "cargo-lock", "{v}");
+
+    // 2. A member no class claims: the lock pins its build, so everything runs.
+    let d = tree(
+        "unclaimed-member",
+        CFG,
+        &[
+            (
+                "nested/ws/Cargo.toml",
+                "[workspace]\nmembers = [\"m\", \"m2\"]\n",
+            ),
+            (
+                "nested/ws/m2/Cargo.toml",
+                "[package]\nname = \"m2\"\nversion = \"0.1.0\"\n",
+            ),
+            ("nested/ws/m2/src/lib.rs", "\n"),
+        ],
+    );
+    assert_run_all(&classify(&d, "nested/ws/Cargo.lock"), "claimed by no class");
+
+    // 3. A path dependency into nested/ws builds with a's root lock; with no
+    //    class rooted in nested/ws, its lock is reached by no walk.
+    let cfg = "[class.a]\ncargo = [\"a/Cargo.toml\"]\n[class.h]\nhand = [\"other/\"]\n";
+    let d = tree(
+        "path-dep",
+        cfg,
+        &[(
+            "a/Cargo.toml",
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nm = { path = \"../nested/ws/m\" }\n",
+        )],
+    );
+    assert_run_all(
+        &classify(&d, "nested/ws/Cargo.lock"),
+        "no class's Cargo walk",
+    );
+
+    // A member list reaching outside the workspace directory.
+    let d = tree(
+        "member-outside",
+        CFG,
+        &[(
+            "nested/ws/Cargo.toml",
+            "[workspace]\nmembers = [\"m\", \"../x\"]\n",
+        )],
+    );
+    assert_run_all(
+        &classify(&d, "nested/ws/Cargo.lock"),
+        "outside its directory",
+    );
+}
+
+// rivet: verifies REQ-027
+#[test]
+fn bazel_and_nix_forms_the_cold_review_found_select_everything() {
+    for (name, file, text, lock) in [
+        (
+            "lock-glob",
+            "nested/ws/BUILD.bazel",
+            "exports_files(glob([\"*.lock\"]))\n",
+            "nested/ws/Cargo.lock",
+        ),
+        (
+            "concat",
+            "MODULE.bazel",
+            "L = \"//nested/ws\" + \":Cargo.lock\"\n",
+            "nested/ws/Cargo.lock",
+        ),
+        (
+            "included-module",
+            "deps.MODULE.bazel",
+            "lock = \"//standalone:Cargo.lock\"\n",
+            "standalone/Cargo.lock",
+        ),
+        (
+            "nix",
+            "nix/default.nix",
+            "cargoLock.lockFile = ../standalone/Cargo.lock;\n",
+            "standalone/Cargo.lock",
+        ),
+    ] {
+        let d = tree(name, CFG, &[(file, text)]);
+        assert_run_all(&classify(&d, lock), file);
+    }
+}

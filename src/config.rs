@@ -92,6 +92,11 @@ pub struct Config {
     pub run_all_suffixes: Vec<String>,
     pub run_all_basenames: Vec<String>,
     pub run_all_dirs: Vec<String>,
+    /// The `[run_all]` prefixes and basenames the adopter wrote (also merged
+    /// into the lists above). A narrowing of a built-in entry (REQ-027,
+    /// REQ-030) never narrows one of these.
+    pub adopter_run_all_prefixes: Vec<String>,
+    pub adopter_run_all_basenames: Vec<String>,
     pub inert_files: Vec<String>,
     pub inert_prefixes: Vec<String>,
     pub docs_namer_exclude: Vec<String>,
@@ -200,6 +205,14 @@ pub fn parse(text: &str, rel_path: &str) -> Result<Config> {
             ("prefixes", &mut c.run_all_prefixes),
             ("suffixes", &mut c.run_all_suffixes),
             ("basenames", &mut c.run_all_basenames),
+        ] {
+            if let Some(v) = t.get(k) {
+                dst.extend(strs(v, &format!("run_all.{k}"))?);
+            }
+        }
+        for (k, dst) in [
+            ("prefixes", &mut c.adopter_run_all_prefixes),
+            ("basenames", &mut c.adopter_run_all_basenames),
         ] {
             if let Some(v) = t.get(k) {
                 dst.extend(strs(v, &format!("run_all.{k}"))?);

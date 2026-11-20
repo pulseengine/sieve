@@ -70,15 +70,26 @@ always runs.
 
 ### Nested workspace lockfiles (REQ-027)
 
-A `Cargo.lock` beside a manifest that declares its own `[workspace]` pins only
-that workspace's builds. The Cargo walk of every class that reaches that
-workspace claims it, so a change to it selects those classes. It still selects
-everything when:
-- no class's walk reaches it;
-- `[run_all]` lists it;
-- a tracked Bazel file (`MODULE.bazel*`, `WORKSPACE*`, `BUILD`,
-  `BUILD.bazel`, `*.bzl`) names it: a crate_universe lockfile feeds Bazel
-  targets that sieve does not trace back to it (DD-009).
+A `Cargo.lock` beside a manifest that declares its own `[workspace]` pins that
+workspace's builds. sieve finds the workspace the way Cargo does: a root whose
+`exclude` covers a package is skipped. The root walk of every class whose
+package builds in that workspace claims the lockfile. A crate reached only as a
+path dependency doesn't, because it builds with its dependant's lock. A change
+to the lockfile selects those classes and every class with a claim inside the
+workspace directory. It still selects everything when:
+- no class's root walk reaches it;
+- a member manifest under it is claimed by no class, or the member list
+  reaches outside the directory;
+- `[run_all]` lists it, or lists the basename `Cargo.lock`;
+- a tracked Bazel or Nix file (`BUILD`, `MODULE.bazel*`, `WORKSPACE*`,
+  `*.bazel`, `*.bzl`, `*.star`, `*.nix`) may name it, by any of:
+  - its path;
+  - a label from any package above it;
+  - `Cargo.lock` together with its directory;
+  - `.lock` in a BUILD file at or above it.
+
+  A crate_universe lockfile feeds Bazel targets that sieve does not trace back
+  to it (DD-009).
 
 The repository-root `Cargo.lock` always selects everything.
 
