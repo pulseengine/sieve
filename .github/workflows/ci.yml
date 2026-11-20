@@ -23,6 +23,11 @@ env:
   # of that file against the rivet release workflow identity. Pinned here so a
   # replaced release asset fails the job instead of being trusted with its own sums.
   RIVET_SHA256: 79dddaf2c084a6be43865fc061b72131ba81b90e8edb2a3bd8825d1b653d684d
+  # wasmtime runs the WASI component in the Test job (REQ-031). It is not in
+  # the pinned pulseengine layer. sha256 of wasmtime-v42.0.1-x86_64-linux.tar.xz,
+  # recorded on 2026-11-20: GitHub's asset digest matched a local download.
+  WASMTIME_VERSION: v42.0.1
+  WASMTIME_SHA256: dd5253f3cb521bb094f9951c3d2c45c746b31e5723b07ce56f162ec9bab44d59
 
 jobs:
   test:
@@ -35,6 +40,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+          targets: wasm32-wasip2
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -42,6 +48,29 @@ jobs:
       # Includes the 74-case classifier corpus against the built binary.
       - name: test
         run: cargo test --locked --all-targets --no-fail-fast -- --nocapture
+      # REQ-031: the same corpus through the WASI component under wasmtime.
+      # Every paths-mode case must select its set AND print the native
+      # binary's JSON byte for byte; git-mode cases are listed as not run.
+      - name: fetch pinned wasmtime
+        run: |
+          d="$RUNNER_TEMP/wasmtime"; mkdir -p "$d"; cd "$d"
+          asset="wasmtime-$WASMTIME_VERSION-x86_64-linux.tar.xz"
+          curl -fsSL -o "$asset" "https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME_VERSION/$asset"
+          act=$(sha256sum "$asset" | awk '{print $1}')
+          test "$act" = "$WASMTIME_SHA256" || { echo "checksum mismatch for $asset: $act"; exit 1; }
+          tar xJf "$asset"
+          echo "SIEVE_WASMTIME=$d/wasmtime-$WASMTIME_VERSION-x86_64-linux/wasmtime" >> "$GITHUB_ENV"
+      - name: build the WASI component
+        run: |
+          CARGO_TARGET_DIR=target/wasi cargo build --locked --release --target wasm32-wasip2
+          echo "SIEVE_WASM=$PWD/target/wasi/wasm32-wasip2/release/sieve.wasm" >> "$GITHUB_ENV"
+      - name: corpus under the component (byte-identical to native)
+        run: |
+          test -x "$SIEVE_WASMTIME" && test -s "$SIEVE_WASM"
+          "$SIEVE_WASMTIME" --version
+          cargo test --locked --test corpus -- --nocapture | tee "$RUNNER_TEMP/component.log"
+          # proves the component ran: native mode prints no skipped git cases
+          grep -q '^55/55 corpus case(s) pass (19 git-mode case(s) not run)$' "$RUNNER_TEMP/component.log"
 
   rivet:
     name: rivet validate
