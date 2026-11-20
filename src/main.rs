@@ -42,7 +42,7 @@ USAGE:
                         [--required <file>] [--format json|text]
   sieve equivalence --config <sieve.toml> --old <detector> [--old-arg <a>]...
                     [--ref <rev> (origin/main)] [--commits <n> (400)]
-                    [--map <old-output>=<class>]... [--accept-narrowing <class>]...
+                    [--map <old-output>=<class>]... [--accept-narrowing <class>[:<prefix>]]...
                     [--format json|text]
   sieve observe --config <sieve.toml> --verdict <classify.json> --results <jobs.json>
                 [--format json|text]
@@ -76,7 +76,9 @@ equivalence: the switch-over gate. For each of the last N first-parent
   or an uncompared commit, 2 usage, 3 refused (nothing compared).
   --map may repeat an old output to map it to several classes.
   --accept-narrowing <class> declares that class's narrowing intended: it is
-  listed (ACCEPTED-NARROWER) but does not fail the gate.
+  listed (ACCEPTED-NARROWER) but does not fail the gate. <class>:<prefix>
+  accepts it only on a commit whose every changed non-inert path starts
+  with <prefix> (and that changed at least one non-inert path).
 observe: the observed-miss counter. Given sieve's verdict for a commit and the
   job conclusions of a run where every job ran ([{name, conclusion}] or the
   API's {jobs: [...]}), lists each job that failed while all its classes
@@ -280,14 +282,28 @@ fn main() -> ExitCode {
                     v.push(n.to_string());
                 }
             }
-            let mut accept_narrowing = std::collections::BTreeSet::new();
-            for c in &a.accept_narrowing {
-                if !cfg.classes.iter().any(|x| &x.name == c) {
+            let mut accept_narrowing: std::collections::BTreeMap<String, Vec<String>> =
+                Default::default();
+            for spec in &a.accept_narrowing {
+                // <class> or <class>:<path prefix>
+                let (c, prefix) = match spec.split_once(':') {
+                    Some((c, p)) if !p.is_empty() => (c, p),
+                    Some(_) => {
+                        return usage_error(&format!(
+                            "--accept-narrowing `{spec}`: empty path prefix"
+                        ))
+                    }
+                    None => (spec.as_str(), ""),
+                };
+                if !cfg.classes.iter().any(|x| x.name == c) {
                     return usage_error(&format!(
                         "--accept-narrowing: no class `{c}` in the config"
                     ));
                 }
-                accept_narrowing.insert(c.clone());
+                accept_narrowing
+                    .entry(c.to_string())
+                    .or_default()
+                    .push(prefix.to_string());
             }
             let format = a.format.clone().unwrap_or_else(|| "text".into());
             if !["json", "text"].contains(&format.as_str()) {
