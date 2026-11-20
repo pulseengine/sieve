@@ -425,7 +425,7 @@ artifacts:
   - id: REQ-025
     type: requirement
     title: Parse configuration and workflow YAML with rivet-yaml
-    status: draft
+    status: implemented
     release: v0.3.0
     description: >
       Owner direction (2026-11-18). check-workflows and any YAML config use
@@ -436,7 +436,12 @@ artifacts:
       or rivet-yaml until upstream rowan is sound). Whether sieve.toml
       becomes sieve.yaml is a config-format change that goes through the
       seam block on #3 and its consumers first.
-    fields: {priority: should, category: constraint}
+      2026-11-20: check-workflows parses with rivet-yaml at rivet v0.43.0
+      (rev 5072986f); yaml-rust2 is removed. sieve.toml is unchanged.
+    fields:
+      priority: should
+      category: constraint
+      review: 'author-verified: full suite green; old (yaml-rust2, main 2b45f1a) vs new check-workflows identical on 15/15 repos (492 failures over 632 checks); no independent review'
     links:
       - {type: satisfies, target: SSC-002}
 

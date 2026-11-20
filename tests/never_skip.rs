@@ -180,3 +180,15 @@ fn a_failed_need_or_an_emptied_matrix_cannot_skip_a_guard_job() {
     let (code, c) = codes(&repo("ok-include", &ok));
     assert_eq!(code, Some(0), "{c:?}");
 }
+
+// rivet: verifies REQ-025
+#[test]
+fn workflows_parse_with_rivet_yaml_including_whitespace_only_lines() {
+    // rivet#1289 (fixed in rivet v0.43.0): a whitespace-only line between
+    // block mapping entries is valid YAML; kiln's workflows have them.
+    let wf = format!(
+        "{BASE}{LINT}  hw:\n    name: Hardware run\n    \n    runs-on: x\n      \n    steps:\n      - run: true\n"
+    );
+    let (code, c) = codes(&repo("whitespace-line", &wf));
+    assert_eq!(code, Some(0), "{c:?}");
+}

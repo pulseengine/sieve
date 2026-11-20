@@ -30,11 +30,11 @@
 
 use crate::config::Config;
 use regex::Regex;
+use rivet_yaml::Value as Yaml;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use yaml_rust2::{Yaml, YamlLoader};
 
 const DEFAULT_WORKFLOWS: &str = ".github/workflows";
 const DEFAULT_REQUIRED: &str = ".github/required-contexts.txt";
@@ -60,7 +60,7 @@ fn key_is(k: &Yaml, name: &str) -> bool {
 
 fn get<'a>(y: &'a Yaml, name: &str) -> Option<&'a Yaml> {
     match y {
-        Yaml::Hash(h) => h.iter().find(|(k, _)| key_is(k, name)).map(|(_, v)| v),
+        Yaml::Mapping(h) => h.iter().find(|(k, _)| key_is(k, name)).map(|(_, v)| v),
         _ => None,
     }
 }
@@ -76,14 +76,14 @@ fn get_nn<'a>(y: &'a Yaml, name: &str) -> Option<&'a Yaml> {
 
 fn entries(y: Option<&Yaml>) -> Vec<(String, &Yaml)> {
     match y {
-        Some(Yaml::Hash(h)) => h.iter().map(|(k, v)| (py_str(k), v)).collect(),
+        Some(Yaml::Mapping(h)) => h.iter().map(|(k, v)| (py_str(k), v)).collect(),
         _ => vec![],
     }
 }
 
 fn list(y: Option<&Yaml>) -> Vec<&Yaml> {
     match y {
-        Some(Yaml::Array(a)) => a.iter().collect(),
+        Some(Yaml::Sequence(a)) => a.iter().collect(),
         _ => vec![],
     }
 }
@@ -91,10 +91,10 @@ fn list(y: Option<&Yaml>) -> Vec<&Yaml> {
 /// Python `str()` of a scalar, close enough for messages and regex tests.
 fn py_str(y: &Yaml) -> String {
     match y {
-        Yaml::String(s) | Yaml::Real(s) => s.clone(),
-        Yaml::Integer(i) => i.to_string(),
-        Yaml::Boolean(true) => "True".into(),
-        Yaml::Boolean(false) => "False".into(),
+        Yaml::String(s) => s.clone(),
+        Yaml::Number(n) => n.to_string(),
+        Yaml::Bool(true) => "True".into(),
+        Yaml::Bool(false) => "False".into(),
         Yaml::Null => "None".into(),
         other => format!("{other:?}"),
     }
@@ -103,8 +103,8 @@ fn py_str(y: &Yaml) -> String {
 /// Every string anywhere under `y`, newline-joined (Python `json.dumps` search).
 fn flatten(y: &Yaml, out: &mut String) {
     match y {
-        Yaml::Array(a) => a.iter().for_each(|v| flatten(v, out)),
-        Yaml::Hash(h) => h.iter().for_each(|(k, v)| {
+        Yaml::Sequence(a) => a.iter().for_each(|v| flatten(v, out)),
+        Yaml::Mapping(h) => h.iter().for_each(|(k, v)| {
             flatten(k, out);
             flatten(v, out);
         }),
@@ -117,11 +117,11 @@ fn flatten(y: &Yaml, out: &mut String) {
 
 fn truthy(y: &Yaml) -> bool {
     match y {
-        Yaml::Null | Yaml::BadValue | Yaml::Boolean(false) => false,
-        Yaml::Integer(i) => *i != 0,
-        Yaml::String(s) | Yaml::Real(s) => !s.is_empty(),
-        Yaml::Array(a) => !a.is_empty(),
-        Yaml::Hash(h) => !h.is_empty(),
+        Yaml::Null | Yaml::Bool(false) => false,
+        Yaml::Number(n) => n.as_f64() != Some(0.0),
+        Yaml::String(s) => !s.is_empty(),
+        Yaml::Sequence(a) => !a.is_empty(),
+        Yaml::Mapping(h) => !h.is_empty(),
         _ => true,
     }
 }
@@ -129,7 +129,7 @@ fn truthy(y: &Yaml) -> bool {
 /// The string members of a YAML scalar-or-list (a scalar is a one-element list).
 fn members(y: &Yaml) -> Vec<String> {
     match y {
-        Yaml::Array(a) => a.iter().map(py_str).collect(),
+        Yaml::Sequence(a) => a.iter().map(py_str).collect(),
         other => vec![py_str(other)],
     }
 }
@@ -147,9 +147,9 @@ type Problem = (&'static str, String);
 fn trigger_state(wf: &Yaml) -> Option<Problem> {
     // YAML 1.1 parsers read the key `on` as boolean true; 1.2 ones as "on".
     let on = match wf {
-        Yaml::Hash(h) => h
+        Yaml::Mapping(h) => h
             .iter()
-            .find(|(k, _)| matches!(k, Yaml::Boolean(true)))
+            .find(|(k, _)| matches!(k, Yaml::Bool(true)))
             .map(|(_, v)| v),
         _ => None,
     }
@@ -168,7 +168,7 @@ fn trigger_state(wf: &Yaml) -> Option<Problem> {
                 Some(("no-pr", format!("only `on: {s}`")))
             }
         }
-        Some(Yaml::Array(a)) => {
+        Some(Yaml::Sequence(a)) => {
             let names: Vec<String> = a.iter().map(py_str).collect();
             if !names.iter().any(|n| n == "pull_request") {
                 Some(("no-pr", "no pull_request trigger".into()))
@@ -178,13 +178,13 @@ fn trigger_state(wf: &Yaml) -> Option<Problem> {
                 None
             }
         }
-        Some(on @ Yaml::Hash(_)) => {
+        Some(on @ Yaml::Mapping(_)) => {
             let Some(pr) = get(on, "pull_request") else {
                 return Some(("no-pr", "no pull_request trigger".into()));
             };
             // A bare `pull_request:` fires on everything; it still needs the queue trigger.
             if !matches!(pr, Yaml::Null) {
-                if !matches!(pr, Yaml::Hash(_)) {
+                if !matches!(pr, Yaml::Mapping(_)) {
                     return Some(("no-pr", format!("unparseable pull_request: {pr:?}")));
                 }
                 // Presence of the KEY is what matters, not its value (gale#340).
@@ -195,7 +195,7 @@ fn trigger_state(wf: &Yaml) -> Option<Problem> {
                             Yaml::Null => detail.push_str(
                                 " with no entries (parses as null -- ambiguous, and that is the point)",
                             ),
-                            Yaml::Array(a) => detail.push_str(&format!(" ({} pattern(s))", a.len())),
+                            Yaml::Sequence(a) => detail.push_str(&format!(" ({} pattern(s))", a.len())),
                             _ => {}
                         }
                         return Some(("paths-filter", detail));
@@ -312,11 +312,11 @@ fn never_skip_problem(
     }
     if let Some(st) = get(job, "strategy") {
         let bad = |why: &str| Some(("never-skip-matrix".to_string(), why.to_string()));
-        if !matches!(st, Yaml::Hash(_)) {
+        if !matches!(st, Yaml::Mapping(_)) {
             return bad("strategy is not a literal mapping");
         }
         if let Some(m) = get(st, "matrix") {
-            if !matches!(m, Yaml::Hash(_)) {
+            if !matches!(m, Yaml::Mapping(_)) {
                 return bad("the matrix is an expression, not a literal");
             }
             let mut combos = false;
@@ -325,11 +325,11 @@ fn never_skip_problem(
                     // an exclude can remove every combination: fail closed
                     "exclude" => return bad("a guard job's matrix must not use exclude"),
                     "include" => match v {
-                        Yaml::Array(a) => combos |= !a.is_empty(),
+                        Yaml::Sequence(a) => combos |= !a.is_empty(),
                         _ => return bad("matrix include is not a literal list"),
                     },
                     _ => match v {
-                        Yaml::Array(a) if !a.is_empty() => combos = true,
+                        Yaml::Sequence(a) if !a.is_empty() => combos = true,
                         _ => {
                             return bad(&format!(
                                 "matrix axis `{k}` is not a non-empty literal list"
@@ -915,7 +915,7 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
     let cls = classifier_jobs(&wf.doc);
     let needs: Vec<String> = match get(job, "needs") {
         Some(Yaml::String(s)) => vec![s.clone()],
-        Some(Yaml::Array(a)) => a.iter().map(py_str).collect(),
+        Some(Yaml::Sequence(a)) => a.iter().map(py_str).collect(),
         _ => vec![],
     };
     let cond = get_nn(job, "if");
@@ -1060,10 +1060,10 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
 
     if let Some(m) = get(job, "strategy").and_then(|s| get_nn(s, "matrix")) {
         let bad = match m {
-            Yaml::Hash(h) => {
+            Yaml::Mapping(h) => {
                 get(m, "exclude").is_some_and(truthy)
                     || h.iter().any(|(k, v)| {
-                        !key_is(k, "include") && !matches!(v, Yaml::Array(a) if !a.is_empty())
+                        !key_is(k, "include") && !matches!(v, Yaml::Sequence(a) if !a.is_empty())
                     })
                     || (h.len() == 1 && get(m, "include").is_some_and(|i| !truthy(i)))
             }
@@ -1178,7 +1178,7 @@ pub fn cmd_check_workflows(
     for (name, path) in &files {
         let parsed = std::fs::read_to_string(path)
             .map_err(|e| e.to_string())
-            .and_then(|t| YamlLoader::load_from_str(&t).map_err(|e| e.to_string()));
+            .and_then(|t| rivet_yaml::from_str::<Yaml>(&t).map_err(|e| e.to_string()));
         r.n += 1;
         match parsed {
             Err(e) => {
@@ -1193,8 +1193,8 @@ pub fn cmd_check_workflows(
                     format!("unparseable ({e})"),
                 );
             }
-            Ok(docs) => {
-                if let Some(doc @ Yaml::Hash(_)) = docs.into_iter().next() {
+            Ok(doc) => {
+                if matches!(doc, Yaml::Mapping(_)) {
                     let state = trigger_state(&doc);
                     wfs.push(Wf {
                         file: name.clone(),
