@@ -149,6 +149,9 @@ fn sieve_cmd(dir: &Path, env: &[(&str, String)]) -> Command {
                 .env_remove("SIEVE_FAULT")
                 .env_remove("GITHUB_OUTPUT")
                 .arg("run")
+                // newer Rust std (CI's stable) imports wasi:cli/exit's
+                // exit-with-code, which wasmtime gates as unstable
+                .args(["-S", "cli-exit-with-code=y"])
                 .arg("--dir")
                 .arg(format!("{}::.", dir.display()))
                 .arg("--dir")
