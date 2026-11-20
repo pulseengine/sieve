@@ -24,10 +24,10 @@ env:
   # replaced release asset fails the job instead of being trusted with its own sums.
   RIVET_SHA256: 79dddaf2c084a6be43865fc061b72131ba81b90e8edb2a3bd8825d1b653d684d
   # wasmtime runs the WASI component in the Test job (REQ-031). It is not in
-  # the pinned pulseengine layer. sha256 of wasmtime-v42.0.1-x86_64-linux.tar.xz,
+  # the pinned pulseengine layer. sha256 of wasmtime-v50.0.3-x86_64-linux.tar.xz,
   # recorded on 2026-11-20: GitHub's asset digest matched a local download.
-  WASMTIME_VERSION: v42.0.1
-  WASMTIME_SHA256: dd5253f3cb521bb094f9951c3d2c45c746b31e5723b07ce56f162ec9bab44d59
+  WASMTIME_VERSION: v50.0.3
+  WASMTIME_SHA256: c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476
 
 jobs:
   test:
