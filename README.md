@@ -122,6 +122,24 @@ Each job that failed while sieve selected none of its classes
 (`[workflows.job_outputs]`) is an observed miss, and `observe` exits 1. It is
 a field oracle beside plant's planted controls.
 
+Misses are reported as m of N. N (`compared_skipped_jobs`) counts the jobs
+sieve would have skipped that concluded in the full run; a cancelled or
+skipped one is listed in `uncompared_skipped_jobs`, never counted.
+
+With `--costs costs.json` it also reports an estimated saving, the median
+cost of each skipped job summed. It is an estimate by construction, never a
+measurement:
+
+```json
+{"schema": "sieve.costs.v1", "merge_queue": false,
+ "jobs": {"Zephyr Kernel Tests": 452, "Kani": 38}}
+```
+
+A skipped job with no cost entry is listed in `uncosted_skipped_jobs`, not
+counted as zero. `merge_queue` decides `skipped_jobs_run_before_merge`.
+Without a merge queue, a skipped job first runs after the merge, on push to
+main.
+
 ## Verification
 
 `tests/corpus/` is the language-neutral classifier corpus from gale

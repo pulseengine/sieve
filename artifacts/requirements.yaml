@@ -502,7 +502,7 @@ artifacts:
   - id: REQ-029
     type: requirement
     title: sieve observe reports estimated saved runner-minutes and misses as m of N
-    status: draft
+    status: verified
     release: v0.3.0
     description: >
       From a consumer cost table, observe reports per class the skipped
@@ -510,7 +510,15 @@ artifacts:
       skipped classes; an estimate by construction, never called measured)
       and observed misses as "m of N", N being the skipped class-instances
       compared against a full run on main. One JSON document per varve layer.
-    fields: {priority: should, category: functional}
+      Implemented as `sieve observe --costs <sieve.costs.v1>` per run:
+      compared_skipped_jobs (N), misses (m), uncompared and uncosted jobs
+      listed, never counted, and skipped_jobs_run_before_merge from the
+      table's merge_queue. Summing over the 30-PR window is the consumer's
+      job (one observe document per run).
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (tests/observe.rs; 3 rule mutants killed); no independent review yet
     links:
       - {type: constraint-satisfies, target: SC-005}
 

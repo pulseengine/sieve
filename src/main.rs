@@ -44,7 +44,7 @@ USAGE:
                     [--ref <rev> (origin/main)] [--commits <n> (400)]
                     [--map <old-output>=<class>]... [--accept-narrowing <class>[:<prefix>]]...
                     [--format json|text]
-  sieve observe --config <sieve.toml> --verdict <classify.json> --results <jobs.json>
+  sieve observe --config <sieve.toml> --verdict <classify.json> --results <jobs.json> [--costs <costs.json>]
                 [--format json|text]
   sieve --version | --help
 
@@ -83,7 +83,10 @@ observe: the observed-miss counter. Given sieve's verdict for a commit and the
   job conclusions of a run where every job ran ([{name, conclusion}] or the
   API's {jobs: [...]}), lists each job that failed while all its classes
   ([workflows.job_outputs]) were false. Exit 0 none, 1 a miss, 2 usage,
-  3 refused (unreadable input or no gated job).
+  3 refused (unreadable input or no gated job). Reports misses as m of N, N
+  being the skipped jobs that concluded in the full run. --costs
+  ({schema: sieve.costs.v1, merge_queue, jobs: {name: median minutes}}) adds
+  an ESTIMATED saving: the median cost of each skipped job, summed.
 ";
 
 struct Args {
@@ -109,6 +112,7 @@ struct Args {
     accept_narrowing: Vec<String>,
     verdict: Option<String>,
     results: Option<String>,
+    costs: Option<String>,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -137,6 +141,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         accept_narrowing: vec![],
         verdict: None,
         results: None,
+        costs: None,
     };
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -159,6 +164,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--accept-narrowing" => a.accept_narrowing.push(val("--accept-narrowing")?),
             "--verdict" => a.verdict = Some(val("--verdict")?),
             "--results" => a.results = Some(val("--results")?),
+            "--costs" => a.costs = Some(val("--costs")?),
             "--workflows" => a.workflows = Some(val("--workflows")?),
             "--required" => a.required = Some(val("--required")?),
             "--paths" => {
@@ -323,6 +329,7 @@ fn main() -> ExitCode {
         "observe" => observe::cmd(
             a.verdict.as_deref(),
             a.results.as_deref(),
+            a.costs.as_deref(),
             a.format.as_deref(),
             &cfg,
         ),
