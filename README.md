@@ -68,6 +68,20 @@ A class with an input sieve cannot resolve (an `include!` built from an
 unknown env var, a non-literal `generate!` path, a stale Bazel snapshot)
 always runs.
 
+### Nested workspace lockfiles (REQ-027)
+
+A `Cargo.lock` beside a manifest that declares its own `[workspace]` pins only
+that workspace's builds. The Cargo walk of every class that reaches that
+workspace claims it, so a change to it selects those classes. It still selects
+everything when:
+- no class's walk reaches it;
+- `[run_all]` lists it;
+- a tracked Bazel file (`MODULE.bazel*`, `WORKSPACE*`, `BUILD`,
+  `BUILD.bazel`, `*.bzl`) names it: a crate_universe lockfile feeds Bazel
+  targets that sieve does not trace back to it (DD-009).
+
+The repository-root `Cargo.lock` always selects everything.
+
 ### Scoped leaf-workflow edits (opt-in, REQ-030)
 
 With `[workflows] scope_leaf_edits = true`, an edit to one file directly under

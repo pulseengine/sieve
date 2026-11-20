@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use crate::graph::{self, Graph};
-use crate::repo::{basename, Repo};
+use crate::repo::{basename, dirname, Repo};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
@@ -42,19 +42,29 @@ impl Verdict {
 }
 
 pub fn is_run_all(cfg: &Config, p: &str) -> bool {
-    run_all_except(cfg, p, None)
+    run_all_except(cfg, p, None, None)
 }
 
 /// Whether `p` is a run-all path for a reason other than the run-all prefix
-/// `skip` (REQ-030 narrows only the `.github/` prefix).
-fn run_all_except(cfg: &Config, p: &str, skip: Option<&str>) -> bool {
+/// `skip_prefix` or basename `skip_base` (REQ-030 narrows only `.github/`,
+/// REQ-027 only `Cargo.lock`).
+fn run_all_except(
+    cfg: &Config,
+    p: &str,
+    skip_prefix: Option<&str>,
+    skip_base: Option<&str>,
+) -> bool {
     let base = basename(p);
     cfg.run_all_prefixes
         .iter()
-        .filter(|x| Some(x.as_str()) != skip)
+        .filter(|x| Some(x.as_str()) != skip_prefix)
         .any(|x| p.starts_with(x.as_str()))
         || cfg.run_all_files.iter().any(|x| x == p)
-        || cfg.run_all_basenames.iter().any(|x| x == base)
+        || cfg
+            .run_all_basenames
+            .iter()
+            .filter(|x| Some(x.as_str()) != skip_base)
+            .any(|x| x == base)
         || cfg.run_all_suffixes.iter().any(|x| p.ends_with(x.as_str()))
         || p.split('/')
             .rev()
@@ -151,7 +161,7 @@ fn leaf_scope(
     if name.contains('/') || !(name.ends_with(".yml") || name.ends_with(".yaml")) {
         return None;
     }
-    if run_all_except(cfg, p, Some(".github/")) {
+    if run_all_except(cfg, p, Some(".github/"), None) {
         return None;
     }
     let Some(r) = revs else {
@@ -166,6 +176,65 @@ fn leaf_scope(
             (_, None) => Err(format!("{p} is deleted")),
         }),
     )
+}
+
+/// REQ-027: `None` when `p` is not a nested `Cargo.lock` (the root one, or a
+/// path that is run-all for another reason); `Ok` when a class's Cargo walk
+/// claims it as its workspace's lockfile; otherwise why it still selects
+/// everything.
+fn nested_lock(repo: &Repo, cfg: &Config, p: &str, g: &Graph) -> Option<Result<(), String>> {
+    if basename(p) != "Cargo.lock" || p == "Cargo.lock" {
+        return None;
+    }
+    if run_all_except(cfg, p, None, Some("Cargo.lock")) {
+        return None;
+    }
+    if !g
+        .values()
+        .any(|cg| cg.claims.get(p).is_some_and(|s| *s == "cargo-lock"))
+    {
+        return Some(Err(
+            "no class's Cargo walk reaches the workspace that owns it".into(),
+        ));
+    }
+    match bazel_names(repo, p) {
+        Ok(None) => Some(Ok(())),
+        Ok(Some(f)) => Some(Err(format!(
+            "{f} names it (a crate_universe lockfile feeds Bazel targets sieve does not trace to it, DD-009)"
+        ))),
+        Err(e) => Some(Err(e)),
+    }
+}
+
+/// The first tracked Bazel file (MODULE.bazel*, WORKSPACE*, BUILD, BUILD.bazel,
+/// *.bzl) that names lockfile `p`: by path, by label `//dir:Cargo.lock`, or as
+/// `Cargo.lock` from a BUILD file in the same directory.
+fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
+    let dir = dirname(p);
+    let label = format!("//{dir}:Cargo.lock");
+    for f in repo.tracked()? {
+        let b = basename(&f);
+        let build = b == "BUILD" || b == "BUILD.bazel";
+        if !(build
+            || b.starts_with("MODULE.bazel")
+            || b.starts_with("WORKSPACE")
+            || b.ends_with(".bzl"))
+        {
+            continue;
+        }
+        let text = match std::fs::read(repo.path(&f)) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("read {f}: {e}")),
+        };
+        if text.contains(p)
+            || text.contains(&label)
+            || (build && dirname(&f) == dir && text.contains("Cargo.lock"))
+        {
+            return Ok(Some(f));
+        }
+    }
+    Ok(None)
 }
 
 /// Classify an explicit change set against a derived graph.
@@ -245,6 +314,27 @@ pub fn classify_revs(
             continue;
         }
         if is_run_all(cfg, p) {
+            if let Some(r) = nested_lock(repo, cfg, p, g) {
+                match r {
+                    Ok(()) => {
+                        // every class that claims it, the Cargo walks first
+                        for (c, cg) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
+                            if let Some((claim, via)) = cg.claim_of(p) {
+                                v.explain.entry(c.clone()).or_default().push(
+                                    serde_json::json!({"path": p, "claim": claim, "via": via}),
+                                );
+                            }
+                            v.classes.insert(c.clone(), true);
+                        }
+                    }
+                    Err(why) => {
+                        run_all.get_or_insert_with(|| {
+                            format!("run-all path: {p} is a nested Cargo.lock that is not scoped: {why}")
+                        });
+                    }
+                }
+                continue;
+            }
             match leaf_scope(repo, cfg, p, revs) {
                 Some(Ok(sel)) => {
                     for (c, jobs) in sel {

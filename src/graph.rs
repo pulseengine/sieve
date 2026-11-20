@@ -260,6 +260,14 @@ impl CargoWalk<'_> {
             if wr != manifest {
                 cg.add(wr.clone(), "cargo");
             }
+            // REQ-027: a nested workspace's own lockfile pins this build. The
+            // repository-root Cargo.lock stays a built-in run-all path.
+            if wr != "Cargo.toml" {
+                let lock = format!("{}/Cargo.lock", dirname(wr));
+                if repo.is_file(&lock) {
+                    cg.add(lock, "cargo-lock");
+                }
+            }
         }
 
         let mut rs_roots: Vec<String> = Vec::new();
