@@ -382,6 +382,215 @@ fn never_skip_problem(
     None
 }
 
+/// A cargo invocation in a gated job that names a package or a manifest.
+struct CargoBuild {
+    file: String,
+    jid: String,
+    job: String,
+    classes: Vec<String>,
+    /// `-p X` / `--package X`: the package name; otherwise the manifest path
+    package: Option<String>,
+    manifest: Option<String>,
+    /// repository-relative working directory of the step ("" = root)
+    wd: String,
+}
+
+fn cargo_builds(wfs: &[Wf], cfg: &Config) -> Vec<CargoBuild> {
+    let cmd = Regex::new(
+        r"\bcargo\s+(?:\+\S+\s+)?(?:build|run|test|check|clippy|nextest|llvm-cov|kani|miri|bench|doc)\b[^\n;&|]*",
+    )
+    .unwrap();
+    let pkg = Regex::new(r#"(?:^|\s)(?:-p|--package)(?:\s+|=)['"]?([^\s'"]+)"#).unwrap();
+    let man = Regex::new(r#"(?:^|\s)--manifest-path(?:\s+|=)['"]?([^\s'"]+)"#).unwrap();
+    let mut out = vec![];
+    for wf in wfs {
+        for (jid, job) in entries(get(&wf.doc, "jobs")) {
+            let name = job_name(job, &jid);
+            let Some(classes) = cfg.workflows.job_outputs.get(&name) else {
+                continue; // ungated: it always runs
+            };
+            let job_wd = get(job, "defaults")
+                .and_then(|d| get(d, "run"))
+                .and_then(|r| get(r, "working-directory"))
+                .map(py_str);
+            for st in list(get(job, "steps")) {
+                let run = run_of(st);
+                let wd = get(st, "working-directory")
+                    .map(py_str)
+                    .or_else(|| job_wd.clone())
+                    .unwrap_or_default();
+                for m in cmd.find_iter(&run) {
+                    let mk = |package: Option<String>, manifest: Option<String>| CargoBuild {
+                        file: wf.file.clone(),
+                        jid: jid.clone(),
+                        job: name.clone(),
+                        classes: classes.clone(),
+                        package,
+                        manifest,
+                        wd: wd.clone(),
+                    };
+                    for c in pkg.captures_iter(m.as_str()) {
+                        out.push(mk(Some(c[1].to_string()), None));
+                    }
+                    for c in man.captures_iter(m.as_str()) {
+                        out.push(mk(None, Some(c[1].to_string())));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The claims sieve's graph gives a class whose only Cargo root is `manifest`:
+/// what `cargo build|test|run -p` of that package reads.
+fn built_closure(
+    repo: &crate::repo::Repo,
+    cfg: &Config,
+    manifest: &str,
+) -> Result<Vec<String>, String> {
+    let mut one = cfg.clone();
+    one.classes = vec![crate::config::Class {
+        name: "__built__".into(),
+        cargo: vec![manifest.to_string()],
+        ..Default::default()
+    }];
+    let g = crate::graph::derive(repo, &one).map_err(|e| e.message)?;
+    let cg = g.get("__built__").ok_or("no closure derived")?;
+    if let Some(u) = cg.unresolved.first() {
+        return Err(format!("unresolved input {u}"));
+    }
+    Ok(cg.claims.keys().cloned().collect())
+}
+
+fn cross_class_check(r: &mut Report, builds: &[CargoBuild], root: &Path, cfg: &Config) {
+    let repo = crate::repo::Repo {
+        root: root.to_path_buf(),
+        git: root.join(".git").exists(),
+    };
+    let tracked = match repo.tracked() {
+        Ok(t) => t,
+        Err(e) => return r.refuse("d", format!("cross-class check cannot list files: {e}")),
+    };
+    // package name -> manifest, from the repository's own Cargo.toml files
+    let mut packages: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for f in tracked
+        .iter()
+        .filter(|f| crate::repo::basename(f) == "Cargo.toml")
+    {
+        let Ok(text) = repo.read(f) else { continue };
+        let Ok(v) = text.parse::<toml::Value>() else {
+            continue;
+        };
+        if let Some(n) = v
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+        {
+            packages.entry(n.to_string()).or_default().push(f.clone());
+        }
+    }
+    let graph = match crate::graph::derive(&repo, cfg) {
+        Ok(g) => g,
+        Err(e) => {
+            return r.refuse(
+                "d",
+                format!("cross-class check cannot derive the graph: {}", e.message),
+            )
+        }
+    };
+    for b in builds {
+        r.n += 1;
+        let ctx = format!("cross-class {}", b.job);
+        let what = b.package.as_ref().map_or_else(
+            || format!("--manifest-path {}", b.manifest.as_deref().unwrap_or("")),
+            |p| format!("-p {p}"),
+        );
+        if what.contains("${{") || b.wd.contains("${{") {
+            r.fail("d", &ctx, &b.file, &b.jid, "cross-class-not-literal",
+                format!("`{what}` (working directory `{}`) is an expression; the package it builds cannot be checked", b.wd));
+            continue;
+        }
+        let manifests: Vec<String> = match (&b.package, &b.manifest) {
+            (Some(p), _) => {
+                // `-p name@1.2.3` / `-p name:1.2.3` name a version of the same package
+                let name = p.split(['@', ':']).next().unwrap_or(p);
+                match packages.get(name) {
+                    Some(m) => m.clone(),
+                    None => {
+                        r.fail(
+                            "d",
+                            &ctx,
+                            &b.file,
+                            &b.jid,
+                            "cross-class-unresolved",
+                            format!("`{what}`: no tracked Cargo.toml names package `{name}`"),
+                        );
+                        continue;
+                    }
+                }
+            }
+            (None, Some(m)) => {
+                let base = b.wd.trim_start_matches("./").trim_end_matches('/');
+                match crate::repo::norm(base, m) {
+                    Some(p) => vec![p],
+                    None => {
+                        r.fail(
+                            "d",
+                            &ctx,
+                            &b.file,
+                            &b.jid,
+                            "cross-class-unresolved",
+                            format!("`{what}` leaves the repository"),
+                        );
+                        continue;
+                    }
+                }
+            }
+            (None, None) => continue,
+        };
+        // What the command builds is the package's full Cargo closure as sieve
+        // derives it for a root (all targets, dev-dependencies, path deps,
+        // literal reads), not just its manifest. Every claim of that closure
+        // must be covered by one of the job's classes. A package name shared
+        // by several manifests needs each closure covered.
+        let covered = |p: &str| {
+            b.classes
+                .iter()
+                .any(|c| graph.get(c).is_some_and(|g| g.claims_path(p)))
+        };
+        let mut unclaimed: Vec<String> = vec![];
+        let mut failed_closure = None;
+        for m in &manifests {
+            match built_closure(&repo, cfg, m) {
+                Ok(claims) => unclaimed.extend(claims.into_iter().filter(|c| !covered(c))),
+                Err(e) => failed_closure = Some(format!("{m}: {e}")),
+            }
+        }
+        if let Some(e) = failed_closure {
+            r.fail(
+                "d",
+                &ctx,
+                &b.file,
+                &b.jid,
+                "cross-class-unresolved",
+                format!("`{what}`: the closure it builds cannot be derived ({e})"),
+            );
+        } else if unclaimed.is_empty() {
+            r.text.push(format!(
+                "    claims         {} builds {what}  [{}]",
+                b.job, b.file
+            ));
+        } else {
+            unclaimed.sort();
+            unclaimed.dedup();
+            let shown: Vec<&String> = unclaimed.iter().take(5).collect();
+            r.fail("d", &ctx, &b.file, &b.jid, "cross-class-build",
+                format!("runs `{what}` but its classes {:?} do not claim {} input(s) it builds, e.g. {:?}; a change there would skip this job", b.classes, unclaimed.len(), shown));
+        }
+    }
+}
+
 // --------------------------------------------------- (b) skip only via sieve
 
 fn needs_result() -> Regex {
@@ -1107,6 +1316,14 @@ pub fn cmd_check_workflows(
                 "no job with this name or id in any workflow".into(),
             );
         }
+    }
+
+    // (d) REQ-026: a gated job that builds a Cargo package by name or manifest
+    // must have a class that claims that package's manifest; otherwise a
+    // change to that package skips a job that builds it.
+    let builds = cargo_builds(&wfs, cfg);
+    if !builds.is_empty() {
+        cross_class_check(&mut r, &builds, &root, cfg);
     }
 
     // (c) the classifier it reads fails OPEN
