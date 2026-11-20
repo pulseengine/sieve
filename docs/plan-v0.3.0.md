@@ -22,6 +22,8 @@ the draft. This version applies its findings.
   straight to work; Bet C stays queued (it narrows REQ-005).
 - Owner option dialog (2026-11-20): Bet C approved, start now; REQ-027 in
   v0.3.0; v0.3.0 is tagged after #13, Bet C and REQ-027 have merged.
+- Owner option dialog (2026-11-20, second): FEAT-008..011 and REQ-022 move to
+  v0.4.0 (their acceptance is decided by adopters); sieve tags v0.3.0 on green.
 - Bet C: REQ-030 implemented behind `[workflows] scope_leaf_edits` (opt-in,
   git mode only), with 28 negative-control edits in tests/leaf_scope.rs.
 - REQ-027: nested workspace lockfiles are claimed by the Cargo walks that reach
