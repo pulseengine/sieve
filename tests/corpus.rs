@@ -521,3 +521,52 @@ fn corpus_every_case_selects_exactly_its_expected_set() {
     );
     assert!(failures.is_empty(), "failing cases: {failures:?}");
 }
+
+// rivet: verifies REQ-031
+/// In the WASI component, git mode fails OPEN and says why on stdout, so a
+/// consumer (plant's controls) sees the reason instead of a silent run-all.
+/// Runs only in component mode; natively there is nothing to check.
+#[test]
+fn component_git_mode_fails_open_with_its_reason() {
+    if !component_mode() {
+        return;
+    }
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("corpus")
+        .join("component-git");
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(d.join("a")).unwrap();
+    fs::write(d.join("a/x"), "1").unwrap();
+    fs::write(d.join("sieve.toml"), "[class.a]\nhand = [\"a/\"]\n").unwrap();
+    git(&d, &["init", "-q"]);
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-q", "-m", "root"]);
+    fs::write(d.join("a/x"), "2").unwrap();
+    git(&d, &["commit", "-q", "-am", "change"]);
+    let o = sieve_cmd(&d, &[])
+        .args(["classify", "--config", "sieve.toml", "--format", "json"])
+        .args([
+            "--event",
+            "pull_request",
+            "--base",
+            "HEAD~1",
+            "--head",
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["run_all"], true, "{v}");
+    assert!(
+        v["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("unsupported in the WASI component")),
+        "{v}"
+    );
+}

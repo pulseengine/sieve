@@ -285,6 +285,15 @@ pub fn git_mode(
         return Verdict::all(cfg, "no base sha");
     }
     let head = head.unwrap_or("HEAD");
+    // gix reads loose objects and packs through mmap, which WASI lacks: fail
+    // open with the reason on stdout (plant's controls read it), instead of
+    // failing deep inside gix (REQ-031).
+    if cfg!(target_os = "wasi") {
+        return Verdict::all(
+            cfg,
+            "git mode is unsupported in the WASI component (gix reads objects through mmap); pass the changed paths with --paths or --paths-file",
+        );
+    }
     // A rename is a delete plus an add, and both are classified (gix, in-process).
     match crate::gitrepo::diff_names(root, base, head) {
         Err(e) => Verdict::all(cfg, format!("git diff failed against {base}: {e}")),
