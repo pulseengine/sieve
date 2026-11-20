@@ -146,3 +146,9 @@ Evidence at prep time:
   references that keep run-all;
 - a new release asset `north-star-input.O5.json` (pulseengine.eu#393): one
   fact, `pass: false` (unsigned, no kiln), inside the signed SHA256SUMS.
+
+The first v0.3.0 tag on f93b113 was withdrawn before its release run started
+(run 44710986174 cancelled while queued; nothing published): the fleet stopped
+Intel macOS builds (owner, 2026-11-20), so the release drops
+x86_64-apple-darwin and publishes 3 archives. v0.3.0 is re-tagged on the
+commit that makes that change.
