@@ -75,6 +75,12 @@ pub struct Workflows {
     /// control, proof checks, equivalence jobs). check-workflows fails any of
     /// them that can be skipped (REQ-028).
     pub never_skip_jobs: Vec<String>,
+    /// REQ-030 (opt-in): a modification of one leaf workflow file that leaves
+    /// its triggers, its classifier jobs and every job's gating unchanged
+    /// selects the classes of the jobs it touches instead of every class.
+    /// git mode only (the base version is needed); anything else under
+    /// `.github/` still selects everything.
+    pub scope_leaf_edits: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -326,6 +332,7 @@ fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Resu
             "job_outputs",
             "coe_exempt",
             "never_skip_jobs",
+            "scope_leaf_edits",
         ],
         "workflows",
     )?;
@@ -353,6 +360,11 @@ fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Resu
             }
             w.job_outputs.insert(job.clone(), outs);
         }
+    }
+    if let Some(v) = t.get("scope_leaf_edits") {
+        w.scope_leaf_edits = v
+            .as_bool()
+            .ok_or("workflows.scope_leaf_edits: expected true or false")?;
     }
     if let Some(v) = t.get("never_skip_jobs") {
         w.never_skip_jobs = strs(v, "workflows.never_skip_jobs")?;

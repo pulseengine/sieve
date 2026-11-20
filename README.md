@@ -68,6 +68,35 @@ A class with an input sieve cannot resolve (an `include!` built from an
 unknown env var, a non-literal `generate!` path, a stale Bazel snapshot)
 always runs.
 
+### Scoped leaf-workflow edits (opt-in, REQ-030)
+
+With `[workflows] scope_leaf_edits = true`, an edit to one file directly under
+`.github/workflows/` can select less than everything. In git mode sieve reads
+the file at the merge base and at head. If only job bodies changed, it selects
+the classes the classifier `if:` reads for:
+- the changed and added jobs;
+- every job that needs a changed job, transitively;
+- every job those need.
+
+An ungated changed job selects nothing, because it runs on every pull request
+anyway. The edit still selects everything when:
+- the file is added, deleted or reusable (`on: workflow_call`);
+- anything outside `jobs:` changed;
+- a job is removed;
+- a job running `sieve classify` changed;
+- a changed job changed `if`, `needs`, `continue-on-error`, `strategy`, `uses`
+  or `outputs`, or a step's `if`/`continue-on-error`;
+- an affected job has a step gated on job or step outputs;
+- a job in the closure has any `if:` other than the exact classifier form or
+  `always()`/`!cancelled()`;
+- the file uses a YAML merge key;
+- nothing changed once parsed (comments, layout);
+- `[run_all]` lists the file.
+
+`--paths` has no base version, so there `.github/` still selects everything.
+Composite actions, reusable workflows and everything else under `.github/`
+also always select everything.
+
 ## sieve.toml
 
 ```toml

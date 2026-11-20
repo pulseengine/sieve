@@ -71,11 +71,7 @@ artifacts:
     type: requirement
     title: Treat CI, toolchain, build-system and sieve config paths as run-all paths
     status: verified
-    description: >
-      .github/**, the consumer's tools/** config, .cargo/** at any level,
-      Cargo.lock, rust-toolchain*, BUILD, *.bzl, MODULE.bazel*, .bazelrc,
-      .bazelversion, varve.toml, sieve.toml and committed graph snapshots.
-      A run-all reason names the path, never with the "internal:" prefix.
+    description: ".github/**, the consumer's tools/** config, .cargo/** at any level, Cargo.lock, rust-toolchain*, BUILD, *.bzl, MODULE.bazel*, .bazelrc, .bazelversion, varve.toml, sieve.toml and committed graph snapshots. A run-all reason names the path, never with the \"internal:\" prefix. Amended (owner, 2026-11-20; see the requirement deriving from this one): with [workflows] scope_leaf_edits = true, a leaf-workflow edit that leaves triggers, classifier jobs and gating unchanged selects only the classes of the jobs it touches."
     release: v0.1.0
     fields:
       priority: must
@@ -543,14 +539,9 @@ artifacts:
   - id: REQ-030
     type: requirement
     title: A change confined to one leaf workflow selects only that workflow's job classes
-    status: draft
+    status: implemented
     release: v0.3.0
-    description: >
-      Narrows the run-all rule for .github/ (amends REQ-005 and SSC-003;
-      owner decision required before implementation). A change to the
-      classify wiring, sieve.toml, a reusable workflow or a composite action
-      still selects everything; a leaf-workflow edit that weakens its own
-      gating still selects everything (negative control).
+    description: "Narrows the run-all rule for .github/ (amends REQ-005 and SSC-003; owner approved in the option dialog of 2026-11-20). Opt-in with [workflows] scope_leaf_edits = true, git mode only (the merge-base version is read through gix). A modification of one file directly under .github/workflows/ selects the classes read by the classifier if: of the changed and added jobs, every job that needs one of them (transitively) and every job those need. It still selects everything when: the file is added, deleted or reusable (on: workflow_call); anything outside jobs: changed; a job was removed; a job running sieve classify changed; a changed job changed if, needs, continue-on-error, strategy, uses or outputs, or a step's if/continue-on-error; an affected job has a step gated on job or step outputs; a job in the closure has an if: other than the exact classifier form or always()/!cancelled(); the file uses a YAML merge key; no job changed as parsed; or the adopter lists the file in [run_all]. Composite actions, reusable workflows, sieve.toml and anything else under .github/ select everything."
     fields: {priority: should, category: functional}
     links:
       - {type: constraint-satisfies, target: SC-006}

@@ -42,9 +42,16 @@ impl Verdict {
 }
 
 pub fn is_run_all(cfg: &Config, p: &str) -> bool {
+    run_all_except(cfg, p, None)
+}
+
+/// Whether `p` is a run-all path for a reason other than the run-all prefix
+/// `skip` (REQ-030 narrows only the `.github/` prefix).
+fn run_all_except(cfg: &Config, p: &str, skip: Option<&str>) -> bool {
     let base = basename(p);
     cfg.run_all_prefixes
         .iter()
+        .filter(|x| Some(x.as_str()) != skip)
         .any(|x| p.starts_with(x.as_str()))
         || cfg.run_all_files.iter().any(|x| x == p)
         || cfg.run_all_basenames.iter().any(|x| x == base)
@@ -120,12 +127,64 @@ pub fn inputs_hash(cfg: &Config, g: &Graph) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// The base and head commits of a change set, when known (git mode and the
+/// equivalence replay); leaf-workflow scoping (REQ-030) needs both versions.
+#[derive(Debug, Clone, Copy)]
+pub struct Revs<'a> {
+    pub base: &'a str,
+    pub head: &'a str,
+}
+
+/// REQ-030: `None` when `p` is not a candidate (scoping off, not a direct
+/// child of `.github/workflows/`, or run-all for another reason); otherwise
+/// the selected classes (class -> jobs), or why it still selects everything.
+fn leaf_scope(
+    repo: &Repo,
+    cfg: &Config,
+    p: &str,
+    revs: Option<Revs>,
+) -> Option<Result<BTreeMap<String, BTreeSet<String>>, String>> {
+    if !cfg.workflows.scope_leaf_edits {
+        return None;
+    }
+    let name = p.strip_prefix(".github/workflows/")?;
+    if name.contains('/') || !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+        return None;
+    }
+    if run_all_except(cfg, p, Some(".github/")) {
+        return None;
+    }
+    let Some(r) = revs else {
+        return Some(Err(
+            "leaf-workflow scoping needs the base version (git mode)".into(),
+        ));
+    };
+    Some(
+        crate::gitrepo::blob_pair(&repo.root, r.base, r.head, p).and_then(|pair| match pair {
+            (Some(b), Some(h)) => crate::workflows::leaf_scope(cfg, p, &b, &h),
+            (None, _) => Err(format!("{p} is added")),
+            (_, None) => Err(format!("{p} is deleted")),
+        }),
+    )
+}
+
 /// Classify an explicit change set against a derived graph.
 pub fn classify(
     repo: &Repo,
     cfg: &Config,
     changed: &[String],
     g: &Graph,
+) -> Result<Verdict, String> {
+    classify_revs(repo, cfg, changed, g, None)
+}
+
+/// [`classify`] with the change set's commits, when known.
+pub fn classify_revs(
+    repo: &Repo,
+    cfg: &Config,
+    changed: &[String],
+    g: &Graph,
+    revs: Option<Revs>,
 ) -> Result<Verdict, String> {
     let changed: Vec<String> = changed
         .iter()
@@ -186,9 +245,37 @@ pub fn classify(
             continue;
         }
         if is_run_all(cfg, p) {
-            run_all.get_or_insert_with(|| {
-                format!("run-all path: {p} is CI, toolchain, build-system or sieve config")
-            });
+            match leaf_scope(repo, cfg, p, revs) {
+                Some(Ok(sel)) => {
+                    for (c, jobs) in sel {
+                        v.explain.entry(c.clone()).or_default().push(
+                            serde_json::json!({"path": p, "claim": "leaf workflow", "via": jobs}),
+                        );
+                        v.classes.insert(c, true);
+                    }
+                    for (c, cg) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
+                        if let Some((claim, via)) = cg.claim_of(p) {
+                            v.explain
+                                .entry(c.clone())
+                                .or_default()
+                                .push(serde_json::json!({"path": p, "claim": claim, "via": via}));
+                        }
+                        v.classes.insert(c.clone(), true);
+                    }
+                }
+                Some(Err(why)) => {
+                    run_all.get_or_insert_with(|| {
+                        format!(
+                            "run-all path: {p} is CI and not a scoped leaf-workflow edit: {why}"
+                        )
+                    });
+                }
+                None => {
+                    run_all.get_or_insert_with(|| {
+                        format!("run-all path: {p} is CI, toolchain, build-system or sieve config")
+                    });
+                }
+            }
             continue;
         }
         let hits: Vec<&String> = g
@@ -241,11 +328,21 @@ pub fn classify(
 
 /// Derive the graph, then classify; a graph that cannot be derived selects all.
 pub fn classify_paths(repo: &Repo, cfg: &Config, changed: &[String]) -> Verdict {
+    classify_paths_revs(repo, cfg, changed, None)
+}
+
+/// [`classify_paths`] with the change set's commits, when known.
+pub fn classify_paths_revs(
+    repo: &Repo,
+    cfg: &Config,
+    changed: &[String],
+    revs: Option<Revs>,
+) -> Verdict {
     if changed.iter().all(|c| c.trim().is_empty()) {
         return Verdict::all(cfg, "no changed paths");
     }
     match graph::derive(repo, cfg) {
-        Ok(g) => classify(repo, cfg, changed, &g)
+        Ok(g) => classify_revs(repo, cfg, changed, &g, revs)
             .unwrap_or_else(|e| Verdict::all(cfg, format!("internal: {e}"))),
         Err(e) => Verdict::all(
             cfg,
@@ -301,7 +398,7 @@ pub fn git_mode(
             if paths.is_empty() {
                 Verdict::all(cfg, "empty diff")
             } else {
-                classify_paths(&repo, cfg, &paths)
+                classify_paths_revs(&repo, cfg, &paths, Some(Revs { base, head }))
             }
         }
     }

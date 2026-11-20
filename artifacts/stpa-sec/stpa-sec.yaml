@@ -84,9 +84,6 @@ artifacts:
     type: sec-constraint
     title: Changes to sieve's own config and the workflow wiring must select everything
     status: draft
-    description: >
-      sieve.toml, snapshots and fingerprints, .github/** and toolchain pins
-      are run-all paths; gate (b) refuses env overrides of the classifier's
-      inputs.
+    description: "sieve.toml, snapshots and fingerprints, .github/** and toolchain pins are run-all paths; gate (b) refuses env overrides of the classifier's inputs. Amended (owner, 2026-11-20; see the requirement deriving from this one): an opt-in, git-mode-only exception for a leaf-workflow edit that leaves everything outside jobs:, every classifier job and every job's gating keys unchanged; the classifier wiring itself still selects everything."
     links:
       - {type: prevents-sec-hazard, target: SH-003}
