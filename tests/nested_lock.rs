@@ -385,3 +385,44 @@ fn bazel_and_nix_forms_the_cold_review_found_select_everything() {
         assert_run_all(&classify(&d, lock), file);
     }
 }
+
+// rivet: verifies REQ-027
+#[test]
+fn an_explicit_member_wins_over_exclude_and_nix_relative_paths_count() {
+    // nested/ws lists tool as a member AND excludes it: Cargo keeps it a
+    // member, so tool builds with nested/ws/Cargo.lock and claims it.
+    let cfg = format!("{CFG}[class.t]\ncargo = [\"nested/ws/tool/Cargo.toml\"]\n");
+    let d = tree(
+        "member-beats-exclude",
+        &cfg,
+        &[
+            (
+                "nested/ws/Cargo.toml",
+                "[workspace]\nmembers = [\"m\", \"tool\"]\nexclude = [\"tool\"]\n",
+            ),
+            (
+                "nested/ws/tool/Cargo.toml",
+                "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n",
+            ),
+            ("nested/ws/tool/src/main.rs", "fn main() {}\n"),
+        ],
+    );
+    let v = classify(&d, "nested/ws/Cargo.lock");
+    assert_eq!(v["explain"]["t"][0]["via"], "cargo-lock", "{v}");
+
+    for (name, file, text) in [
+        (
+            "nix-same-dir",
+            "nested/ws/default.nix",
+            "cargoLock.lockFile = ./Cargo.lock;\n",
+        ),
+        (
+            "nix-relative",
+            "other/pkg.nix",
+            "lockFile = ../nested/./ws/Cargo.lock;\n",
+        ),
+    ] {
+        let d = tree(name, CFG, &[(file, text)]);
+        assert_run_all(&classify(&d, "nested/ws/Cargo.lock"), file);
+    }
+}

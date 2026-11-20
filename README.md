@@ -86,7 +86,8 @@ workspace directory. It still selects everything when:
   - its path;
   - a label from any package above it;
   - `Cargo.lock` together with its directory;
-  - `.lock` in a BUILD file at or above it.
+  - `.lock` in a BUILD or Nix file at or above it;
+  - a relative path in a Nix file that resolves to it.
 
   A crate_universe lockfile feeds Bazel targets that sieve does not trace back
   to it (DD-009).

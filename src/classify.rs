@@ -238,7 +238,10 @@ fn members_claimed(repo: &Repo, p: &str, g: &Graph) -> Result<(), String> {
         if !f.starts_with(&prefix) || basename(&f) != "Cargo.toml" || f == root {
             continue;
         }
-        if graph::cargo_workspace_of(repo, &f).as_deref() != Some(root.as_str()) {
+        // a member as Cargo decides it, or (to fail open) by nearest root
+        let member = graph::cargo_workspace_of(repo, &f).as_deref() == Some(root.as_str())
+            || graph::nearest_workspace_of(repo, &f).as_deref() == Some(root.as_str());
+        if !member {
             continue;
         }
         if !g.values().any(|cg| cg.claims_path(&f)) {
@@ -265,6 +268,7 @@ fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
     for f in repo.tracked()? {
         let b = basename(&f);
         let build = b == "BUILD" || (b.starts_with("BUILD.") && b.ends_with(".bazel"));
+        let nix = b.ends_with(".nix");
         if !(build
             || b.starts_with("MODULE.bazel")
             || b.starts_with("WORKSPACE")
@@ -284,7 +288,8 @@ fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
         let above = fdir.is_empty() || dir == fdir || dir.starts_with(&format!("{fdir}/"));
         if text.contains(p)
             || labels.iter().any(|l| text.contains(l.as_str()))
-            || (build && above && text.contains(".lock"))
+            || ((build || nix) && above && text.contains(".lock"))
+            || (nix && nix_paths(&text, fdir).iter().any(|r| r == p))
             // a label built by concatenation: "//dir" + ":Cargo.lock"
             || (text.contains("Cargo.lock") && text.contains(dir))
         {
@@ -559,4 +564,13 @@ pub fn git_mode(
             }
         }
     }
+}
+
+/// Relative paths (`./x`, `../x`) in a Nix file, resolved against its
+/// directory `fdir`; a path that leaves the repository is dropped.
+fn nix_paths(text: &str, fdir: &str) -> Vec<String> {
+    let re = regex::Regex::new(r#"(?:^|[\s=(\[{;:"'])(\.\.?/[A-Za-z0-9._/+-]+)"#).unwrap();
+    re.captures_iter(text)
+        .filter_map(|c| crate::repo::norm(fdir, &c[1]))
+        .collect()
 }

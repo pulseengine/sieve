@@ -1352,8 +1352,10 @@ pub fn bazel_fingerprint(repo: &Repo, files: &[String]) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// Whether the `[workspace] exclude` of the root manifest in `root_dir`
-/// covers the package directory `mdir`.
+/// Whether the root manifest in `root_dir` excludes the package directory
+/// `mdir`, as Cargo decides it: an `exclude` entry covers it and no `members`
+/// entry does (an explicit member wins over an exclude). A member glob counts
+/// when it matches the package directory or any directory above it.
 fn excludes(root: &Value, root_dir: &str, mdir: &str) -> bool {
     let rel = if root_dir.is_empty() {
         mdir
@@ -1366,16 +1368,35 @@ fn excludes(root: &Value, root_dir: &str, mdir: &str) -> bool {
             None => return false,
         }
     };
-    root.get("workspace")
-        .and_then(|w| w.get("exclude"))
-        .and_then(Value::as_array)
-        .is_some_and(|ex| {
-            ex.iter().filter_map(Value::as_str).any(|e| {
-                let e = e.trim_end_matches('/');
-                let e = e.strip_prefix("./").unwrap_or(e);
-                rel == e || rel.starts_with(&format!("{e}/"))
+    let entries = |key: &str| -> Vec<String> {
+        root.get("workspace")
+            .and_then(|w| w.get(key))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|e| {
+                        let e = e.trim_end_matches('/');
+                        e.strip_prefix("./").unwrap_or(e).to_string()
+                    })
+                    .collect()
             })
-        })
+            .unwrap_or_default()
+    };
+    let covers = |e: &str| rel == e || rel.starts_with(&format!("{e}/"));
+    if !entries("exclude").iter().any(|e| covers(e)) {
+        return false;
+    }
+    // rel and every directory above it, inside the workspace
+    let mut ancestors = vec![rel.to_string()];
+    let mut d = rel;
+    while let Some((up, _)) = d.rsplit_once('/') {
+        ancestors.push(up.to_string());
+        d = up;
+    }
+    !entries("members")
+        .iter()
+        .any(|m| covers(m) || ancestors.iter().any(|a| crate::repo::wildcard(m, a)))
 }
 
 /// The workspace root manifest Cargo uses for `manifest` (exclude honoured),
@@ -1383,6 +1404,13 @@ fn excludes(root: &Value, root_dir: &str, mdir: &str) -> bool {
 pub fn cargo_workspace_of(repo: &Repo, manifest: &str) -> Option<String> {
     let doc = toml::from_str::<Value>(&repo.read(manifest).ok()?).ok()?;
     cargo_workspace(repo, dirname(manifest), &doc)
+}
+
+/// The nearest manifest at or above `manifest` that declares [workspace],
+/// exclude ignored (REQ-027 also counts these as members, to fail open).
+pub fn nearest_workspace_of(repo: &Repo, manifest: &str) -> Option<String> {
+    let doc = toml::from_str::<Value>(&repo.read(manifest).ok()?).ok()?;
+    enclosing_workspace(repo, dirname(manifest), &doc)
 }
 
 #[cfg(test)]
