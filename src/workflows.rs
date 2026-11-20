@@ -312,11 +312,11 @@ fn never_skip_problem(
     }
     if let Some(st) = get(job, "strategy") {
         let bad = |why: &str| Some(("never-skip-matrix".to_string(), why.to_string()));
-        if !matches!(st, Yaml::Hash(_)) {
+        if !matches!(st, Yaml::Mapping(_)) {
             return bad("strategy is not a literal mapping");
         }
         if let Some(m) = get(st, "matrix") {
-            if !matches!(m, Yaml::Hash(_)) {
+            if !matches!(m, Yaml::Mapping(_)) {
                 return bad("the matrix is an expression, not a literal");
             }
             let mut combos = false;
@@ -325,11 +325,11 @@ fn never_skip_problem(
                     // an exclude can remove every combination: fail closed
                     "exclude" => return bad("a guard job's matrix must not use exclude"),
                     "include" => match v {
-                        Yaml::Array(a) => combos |= !a.is_empty(),
+                        Yaml::Sequence(a) => combos |= !a.is_empty(),
                         _ => return bad("matrix include is not a literal list"),
                     },
                     _ => match v {
-                        Yaml::Array(a) if !a.is_empty() => combos = true,
+                        Yaml::Sequence(a) if !a.is_empty() => combos = true,
                         _ => {
                             return bad(&format!(
                                 "matrix axis `{k}` is not a non-empty literal list"
