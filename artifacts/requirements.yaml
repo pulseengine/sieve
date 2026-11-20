@@ -558,7 +558,7 @@ artifacts:
       category: constraint
       progress: >
         2026-11-20: the wasm32-wasip2 component builds unchanged. The Test job
-        runs all 55 paths-mode corpus cases under wasmtime v42.0.1 (pinned),
+        runs all 55 paths-mode corpus cases under wasmtime v50.0.3 (pinned),
         byte-identical to native. A divergent build fails 0/55 (checked
         locally). Open:
         (1) kiln 0.7.3 refuses the meld-fused module on 3 filesystem imports
