@@ -216,6 +216,32 @@ jobs:
           } > release-assets/build-env.txt
           cat release-assets/build-env.txt
 
+      # North Star O5 input (pulseengine.eu#393, input.schema.json v1), inside
+      # the sums so it is signed. One fact, the sieve classify gate. It does
+      # not pass: the component is unsigned (sigil#395) and kiln does not run
+      # it (kiln#687). wasmtime_equal and equivalence_in_ci come from the
+      # required Test job on this commit (55 paths-mode corpus cases byte for
+      # byte under wasmtime), which main's protection makes a precondition.
+      - name: North Star O5 input
+        run: |
+          set -euo pipefail
+          jq -n --arg v "$VERSION" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg ev "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA" '{
+            schema_version: 1, objective: "O5", repo: "pulseengine/sieve",
+            version: $v, generated_at: $now,
+            generator: {tool: "sieve release.yml", version: $v},
+            facts: [{id: "sieve-classify", ran: true, pass: false,
+              detail: {signed: false, kiln_runs: false, wasmtime_equal: true,
+                       equivalence_in_ci: true, gap_switch: false},
+              evidence: $ev}],
+            not_measured: [
+              "the component is not signed (sigil#395)",
+              "kiln does not run the component (kiln#687, 3 filesystem imports)",
+              "wasmtime equality covers the 55 paths-mode corpus cases; git mode fails open under WASI (gix uses mmap)",
+              "no equivalence run of the component over an adopter history"
+            ]}' > release-assets/north-star-input.O5.json
+          cat release-assets/north-star-input.O5.json
+
       - name: Generate SHA256 checksums
         run: |
           set -euo pipefail

@@ -97,6 +97,7 @@ fn release_signs_what_it_publishes() {
         "sieve.cdx.json \"release-assets/",
         "-docs.tar.gz\" -C docs-out",
         "> release-assets/build-env.txt",
+        "> release-assets/north-star-input.O5.json",
         "sha256sum ./* > SHA256SUMS.txt",
         "actions/attest-build-provenance@",
         "cosign sign-blob",

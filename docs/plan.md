@@ -113,3 +113,34 @@ Fixes from spar's first switch-over run (`sieve equivalence`):
   ACCEPTED-NARROWER, not failing.
 REQ-026 (v0.3.0) records spar's finding: a job that builds another class's
 binary (`cargo build -p X`) must claim X's inputs.
+
+## v0.3.0 (prepared 2026-11-20)
+
+Scope (plan in docs/plan-v0.3.0.md, bets A to E). Shipped requirements:
+- REQ-028 `[workflows] never_skip_jobs` (bet A, verified);
+- REQ-029 `observe --costs`, misses as m of N (bet D, verified);
+- REQ-026 check-workflows gate (d), cross-class builds (bet D, verified);
+- REQ-025 workflows parsed with rivet-yaml v0.43.0 (implemented);
+- REQ-030 scoped leaf-workflow edits, opt-in, git mode only (bet C,
+  implemented; owner approved 2026-11-20);
+- REQ-027 a nested workspace's Cargo.lock belongs to the classes that build
+  it (implemented);
+- REQ-031 (draft): CI runs the 55 paths-mode corpus cases through the WASI
+  component under wasmtime v42.0.1, byte-identical to native; unsigned, not
+  under kiln;
+- `equivalence --accept-narrowing <class>:<prefix>` (spar).
+
+The bet features FEAT-008..011 carry fleet acceptance criteria (plant
+controls per adopter, gale's 30 PRs, kiln, signing) that are not met at this
+tag; where they belong is an owner decision (notice 20261120T064025-60a932).
+
+Evidence at prep time:
+- `cargo test --no-fail-fast` green on main cafcf4f; Test and rivet validate
+  green on #13 and #18 at their merged heads;
+- leaf scoping: 28 negative-control edits in tests/leaf_scope.rs select
+  everything; on gale 3 of 40 `.github/` commits scope (FEAT-009 kill
+  criterion: open);
+- nested lockfiles: tests/nested_lock.rs, 11 tests, including Bazel and Nix
+  references that keep run-all;
+- a new release asset `north-star-input.O5.json` (pulseengine.eu#393): one
+  fact, `pass: false` (unsigned, no kiln), inside the signed SHA256SUMS.
