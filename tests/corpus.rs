@@ -142,7 +142,12 @@ fn sieve_cmd(dir: &Path, env: &[(&str, String)]) -> Command {
         (Ok(rt), Ok(wasm)) => {
             let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("corpus");
             let mut c = Command::new(rt);
-            c.env_clear()
+            // wasmtime itself keeps the host environment (HOME for its cache
+            // config); the GUEST sees only the --env variables below, since
+            // wasmtime passes no host variable to it by default
+            c.env_remove("GATE_PROBE_FILES")
+                .env_remove("SIEVE_FAULT")
+                .env_remove("GITHUB_OUTPUT")
                 .arg("run")
                 .arg("--dir")
                 .arg(format!("{}::.", dir.display()))
@@ -204,11 +209,12 @@ fn run_classify(
         let n = native.output().unwrap();
         if n.stdout != o.stdout || n.status.code() != o.status.code() {
             return Err(format!(
-                "component differs from native: exit {:?} vs {:?}\n--- native\n{}\n--- component\n{}",
+                "component differs from native: exit {:?} vs {:?}\n--- native\n{}\n--- component\n{}\n--- component stderr\n{}",
                 n.status.code(),
                 o.status.code(),
                 String::from_utf8_lossy(&n.stdout),
-                String::from_utf8_lossy(&o.stdout)
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
             ));
         }
     }
