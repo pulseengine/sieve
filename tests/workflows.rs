@@ -80,6 +80,51 @@ fn release_runners(text: &str) -> usize {
     n
 }
 
+// rivet: verifies REQ-032
+#[test]
+fn ci_gates_every_lockfile() {
+    let text =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/ci.yml"))
+            .unwrap();
+    // All three run inside the Test job, which is a required check.
+    let test_job = text.find("\n  test:\n").expect("no test job");
+    let next_job = test_job
+        + 1
+        + text[test_job + 1..]
+            .find("\n  rivet:\n")
+            .expect("no rivet job");
+    let job = &text[test_job..next_job];
+    let mut at = 0;
+    for step in [
+        "cargo install --locked cargo-audit --version",
+        "scripts/lockfiles.sh locked",
+        "scripts/lockfiles.sh audit",
+        "scripts/lockfiles.sh controls",
+    ] {
+        let i = job[at..]
+            .find(step)
+            .unwrap_or_else(|| panic!("ci.yml Test job: {step:?} missing or out of order"));
+        at += i + step.len();
+    }
+    // Every cargo command that resolves dependencies runs locked.
+    for line in text.lines().map(str::trim) {
+        for cmd in [
+            "cargo build",
+            "cargo test",
+            "cargo clippy",
+            "cargo install",
+            "cargo run",
+        ] {
+            if line.contains(cmd) && !line.starts_with('#') {
+                assert!(
+                    line.contains("--locked"),
+                    "ci.yml: {line:?} is not --locked"
+                );
+            }
+        }
+    }
+}
+
 // rivet: verifies REQ-017
 // rivet: verifies FEAT-003
 #[test]

@@ -28,6 +28,8 @@ env:
   # recorded on 2026-11-20: GitHub's asset digest matched a local download.
   WASMTIME_VERSION: v50.0.3
   WASMTIME_SHA256: c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476
+  # Built from crates.io with --locked (scripts/lockfiles.sh audit).
+  CARGO_AUDIT_VERSION: 0.22.2
 
 jobs:
   test:
@@ -48,6 +50,19 @@ jobs:
       # Includes the 74-case classifier corpus against the built binary.
       - name: test
         run: cargo test --locked --all-targets --no-fail-fast -- --nocapture
+      # REQ-032: every tracked manifest resolves with --locked (nested
+      # workspaces too, so a gitignored lock is missing here) and cargo audit
+      # covers every tracked Cargo.lock. The planted controls prove both gates
+      # still reject a stale lock, an untracked nested lock and a nested
+      # vulnerable lock.
+      - name: install pinned cargo-audit
+        run: cargo install --locked cargo-audit --version "$CARGO_AUDIT_VERSION"
+      - name: lockfiles locked
+        run: scripts/lockfiles.sh locked
+      - name: lockfiles audited
+        run: scripts/lockfiles.sh audit
+      - name: lockfile gate controls
+        run: scripts/lockfiles.sh controls
       # REQ-031: the same corpus through the WASI component under wasmtime.
       # Every paths-mode case must select its set AND print the native
       # binary's JSON byte for byte; git-mode cases are listed as not run.
