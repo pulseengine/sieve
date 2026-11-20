@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use crate::graph::{self, Graph};
-use crate::repo::{basename, Repo};
+use crate::repo::{basename, dirname, Repo};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
@@ -42,12 +42,29 @@ impl Verdict {
 }
 
 pub fn is_run_all(cfg: &Config, p: &str) -> bool {
+    run_all_except(cfg, p, None, None)
+}
+
+/// Whether `p` is a run-all path for a reason other than the run-all prefix
+/// `skip_prefix` or basename `skip_base` (REQ-030 narrows only `.github/`,
+/// REQ-027 only `Cargo.lock`). An entry the adopter wrote is never skipped.
+fn run_all_except(
+    cfg: &Config,
+    p: &str,
+    skip_prefix: Option<&str>,
+    skip_base: Option<&str>,
+) -> bool {
     let base = basename(p);
     cfg.run_all_prefixes
         .iter()
+        .filter(|x| Some(x.as_str()) != skip_prefix || cfg.adopter_run_all_prefixes.contains(x))
         .any(|x| p.starts_with(x.as_str()))
         || cfg.run_all_files.iter().any(|x| x == p)
-        || cfg.run_all_basenames.iter().any(|x| x == base)
+        || cfg
+            .run_all_basenames
+            .iter()
+            .filter(|x| Some(x.as_str()) != skip_base || cfg.adopter_run_all_basenames.contains(x))
+            .any(|x| x == base)
         || cfg.run_all_suffixes.iter().any(|x| p.ends_with(x.as_str()))
         || p.split('/')
             .rev()
@@ -120,12 +137,185 @@ pub fn inputs_hash(cfg: &Config, g: &Graph) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// The base and head commits of a change set, when known (git mode and the
+/// equivalence replay); leaf-workflow scoping (REQ-030) needs both versions.
+#[derive(Debug, Clone, Copy)]
+pub struct Revs<'a> {
+    pub base: &'a str,
+    pub head: &'a str,
+}
+
+/// REQ-030: `None` when `p` is not a candidate (scoping off, not a direct
+/// child of `.github/workflows/`, or run-all for another reason); otherwise
+/// the selected classes (class -> jobs), or why it still selects everything.
+fn leaf_scope(
+    repo: &Repo,
+    cfg: &Config,
+    p: &str,
+    revs: Option<Revs>,
+) -> Option<Result<BTreeMap<String, BTreeSet<String>>, String>> {
+    if !cfg.workflows.scope_leaf_edits {
+        return None;
+    }
+    let name = p.strip_prefix(".github/workflows/")?;
+    if name.contains('/') || !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+        return None;
+    }
+    if run_all_except(cfg, p, Some(".github/"), None) {
+        return None;
+    }
+    let Some(r) = revs else {
+        return Some(Err(
+            "leaf-workflow scoping needs the base version (git mode)".into(),
+        ));
+    };
+    Some(
+        crate::gitrepo::blob_pair(&repo.root, r.base, r.head, p).and_then(|pair| match pair {
+            (Some(b), Some(h)) => crate::workflows::leaf_scope(cfg, p, &b, &h),
+            (None, _) => Err(format!("{p} is added")),
+            (_, None) => Err(format!("{p} is deleted")),
+        }),
+    )
+}
+
+/// REQ-027: `None` when `p` is not a nested `Cargo.lock` (the root one, or a
+/// path that is run-all for another reason); `Ok` when a class's Cargo walk
+/// claims it as its workspace's lockfile; otherwise why it still selects
+/// everything.
+fn nested_lock(repo: &Repo, cfg: &Config, p: &str, g: &Graph) -> Option<Result<(), String>> {
+    if basename(p) != "Cargo.lock" || p == "Cargo.lock" {
+        return None;
+    }
+    if run_all_except(cfg, p, None, Some("Cargo.lock")) {
+        return None;
+    }
+    if !g
+        .values()
+        .any(|cg| cg.claims.get(p).is_some_and(|s| *s == "cargo-lock"))
+    {
+        return Some(Err(
+            "no class's Cargo walk reaches the workspace that owns it".into(),
+        ));
+    }
+    if let Err(why) = members_claimed(repo, p, g) {
+        return Some(Err(why));
+    }
+    match bazel_names(repo, p) {
+        Ok(None) => Some(Ok(())),
+        Ok(Some(f)) => Some(Err(format!(
+            "{f} names it (a crate_universe lockfile feeds Bazel targets sieve does not trace to it, DD-009)"
+        ))),
+        Err(e) => Some(Err(e)),
+    }
+}
+
+/// Every package that builds with lockfile `p` (each tracked manifest under
+/// its directory whose Cargo workspace is that directory's) is claimed by
+/// some class, so the selection covers every build the lock pins. A member
+/// list reaching outside the directory fails.
+fn members_claimed(repo: &Repo, p: &str, g: &Graph) -> Result<(), String> {
+    let dir = dirname(p);
+    let root = format!("{dir}/Cargo.toml");
+    let doc: toml::Value = repo
+        .read(&root)
+        .ok()
+        .and_then(|t| toml::from_str(&t).ok())
+        .ok_or_else(|| format!("{root} does not read as TOML"))?;
+    let outside = doc
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|m| {
+            m.iter()
+                .filter_map(toml::Value::as_str)
+                .any(|s| s.split('/').any(|c| c == "..") || s.starts_with('/'))
+        });
+    if outside {
+        return Err(format!("{root} lists a member outside its directory"));
+    }
+    let prefix = format!("{dir}/");
+    for f in repo.tracked()? {
+        if !f.starts_with(&prefix) || basename(&f) != "Cargo.toml" || f == root {
+            continue;
+        }
+        // a member as Cargo decides it, or (to fail open) by nearest root
+        let member = graph::cargo_workspace_of(repo, &f).as_deref() == Some(root.as_str())
+            || graph::nearest_workspace_of(repo, &f).as_deref() == Some(root.as_str());
+        if !member {
+            continue;
+        }
+        if !g.values().any(|cg| cg.claims_path(&f)) {
+            return Err(format!("workspace member {f} is claimed by no class"));
+        }
+    }
+    Ok(())
+}
+
+/// The first tracked Bazel or Nix file that may name lockfile `p`. Files:
+/// BUILD, MODULE.bazel*, WORKSPACE*, and anything ending in .bazel, .bzl,
+/// .star or .nix. A file may name `p` when it contains the path; a label for
+/// it from any package above it (`//:a/b/Cargo.lock`, `//a:b/Cargo.lock`,
+/// `//a/b:Cargo.lock`); both `Cargo.lock` and the directory (a label built
+/// by concatenation); or, for a BUILD file at or above its directory, `.lock`
+/// at all (a relative label or a glob such as `*.lock`). Over-matching only
+/// selects more.
+fn bazel_names(repo: &Repo, p: &str) -> Result<Option<String>, String> {
+    let parts: Vec<&str> = p.split('/').collect();
+    let labels: Vec<String> = (0..parts.len())
+        .map(|i| format!("//{}:{}", parts[..i].join("/"), parts[i..].join("/")))
+        .collect();
+    let dir = dirname(p);
+    for f in repo.tracked()? {
+        let b = basename(&f);
+        let build = b == "BUILD" || (b.starts_with("BUILD.") && b.ends_with(".bazel"));
+        let nix = b.ends_with(".nix");
+        if !(build
+            || b.starts_with("MODULE.bazel")
+            || b.starts_with("WORKSPACE")
+            || b.ends_with(".bazel")
+            || b.ends_with(".bzl")
+            || b.ends_with(".star")
+            || b.ends_with(".nix"))
+        {
+            continue;
+        }
+        let text = match std::fs::read(repo.path(&f)) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("read {f}: {e}")),
+        };
+        let fdir = dirname(&f);
+        let above = fdir.is_empty() || dir == fdir || dir.starts_with(&format!("{fdir}/"));
+        if text.contains(p)
+            || labels.iter().any(|l| text.contains(l.as_str()))
+            || ((build || nix) && above && text.contains(".lock"))
+            || (nix && nix_paths(&text, fdir).iter().any(|r| r == p))
+            // a label built by concatenation: "//dir" + ":Cargo.lock"
+            || (text.contains("Cargo.lock") && text.contains(dir))
+        {
+            return Ok(Some(f));
+        }
+    }
+    Ok(None)
+}
+
 /// Classify an explicit change set against a derived graph.
 pub fn classify(
     repo: &Repo,
     cfg: &Config,
     changed: &[String],
     g: &Graph,
+) -> Result<Verdict, String> {
+    classify_revs(repo, cfg, changed, g, None)
+}
+
+/// [`classify`] with the change set's commits, when known.
+pub fn classify_revs(
+    repo: &Repo,
+    cfg: &Config,
+    changed: &[String],
+    g: &Graph,
+    revs: Option<Revs>,
 ) -> Result<Verdict, String> {
     let changed: Vec<String> = changed
         .iter()
@@ -186,9 +376,68 @@ pub fn classify(
             continue;
         }
         if is_run_all(cfg, p) {
-            run_all.get_or_insert_with(|| {
-                format!("run-all path: {p} is CI, toolchain, build-system or sieve config")
-            });
+            if let Some(r) = nested_lock(repo, cfg, p, g) {
+                match r {
+                    Ok(()) => {
+                        // Every class that claims it, and every class that
+                        // claims anything inside its workspace: the lock pins
+                        // every member's build, walked or hand-claimed.
+                        let ws = format!("{}/", dirname(p));
+                        for (c, cg) in g.iter() {
+                            let inside = cg.claims.keys().find(|k| k.starts_with(&ws));
+                            if let Some((claim, via)) = cg.claim_of(p) {
+                                v.explain.entry(c.clone()).or_default().push(
+                                    serde_json::json!({"path": p, "claim": claim, "via": via}),
+                                );
+                            } else if let Some(k) = inside {
+                                v.explain.entry(c.clone()).or_default().push(
+                                    serde_json::json!({"path": p, "claim": k, "via": "cargo-lock-workspace"}),
+                                );
+                            } else {
+                                continue;
+                            }
+                            v.classes.insert(c.clone(), true);
+                        }
+                    }
+                    Err(why) => {
+                        run_all.get_or_insert_with(|| {
+                            format!("run-all path: {p} is a nested Cargo.lock that is not scoped: {why}")
+                        });
+                    }
+                }
+                continue;
+            }
+            match leaf_scope(repo, cfg, p, revs) {
+                Some(Ok(sel)) => {
+                    for (c, jobs) in sel {
+                        v.explain.entry(c.clone()).or_default().push(
+                            serde_json::json!({"path": p, "claim": "leaf workflow", "via": jobs}),
+                        );
+                        v.classes.insert(c, true);
+                    }
+                    for (c, cg) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
+                        if let Some((claim, via)) = cg.claim_of(p) {
+                            v.explain
+                                .entry(c.clone())
+                                .or_default()
+                                .push(serde_json::json!({"path": p, "claim": claim, "via": via}));
+                        }
+                        v.classes.insert(c.clone(), true);
+                    }
+                }
+                Some(Err(why)) => {
+                    run_all.get_or_insert_with(|| {
+                        format!(
+                            "run-all path: {p} is CI and not a scoped leaf-workflow edit: {why}"
+                        )
+                    });
+                }
+                None => {
+                    run_all.get_or_insert_with(|| {
+                        format!("run-all path: {p} is CI, toolchain, build-system or sieve config")
+                    });
+                }
+            }
             continue;
         }
         let hits: Vec<&String> = g
@@ -241,11 +490,21 @@ pub fn classify(
 
 /// Derive the graph, then classify; a graph that cannot be derived selects all.
 pub fn classify_paths(repo: &Repo, cfg: &Config, changed: &[String]) -> Verdict {
+    classify_paths_revs(repo, cfg, changed, None)
+}
+
+/// [`classify_paths`] with the change set's commits, when known.
+pub fn classify_paths_revs(
+    repo: &Repo,
+    cfg: &Config,
+    changed: &[String],
+    revs: Option<Revs>,
+) -> Verdict {
     if changed.iter().all(|c| c.trim().is_empty()) {
         return Verdict::all(cfg, "no changed paths");
     }
     match graph::derive(repo, cfg) {
-        Ok(g) => classify(repo, cfg, changed, &g)
+        Ok(g) => classify_revs(repo, cfg, changed, &g, revs)
             .unwrap_or_else(|e| Verdict::all(cfg, format!("internal: {e}"))),
         Err(e) => Verdict::all(
             cfg,
@@ -301,8 +560,17 @@ pub fn git_mode(
             if paths.is_empty() {
                 Verdict::all(cfg, "empty diff")
             } else {
-                classify_paths(&repo, cfg, &paths)
+                classify_paths_revs(&repo, cfg, &paths, Some(Revs { base, head }))
             }
         }
     }
+}
+
+/// Relative paths (`./x`, `../x`) in a Nix file, resolved against its
+/// directory `fdir`; a path that leaves the repository is dropped.
+fn nix_paths(text: &str, fdir: &str) -> Vec<String> {
+    let re = regex::Regex::new(r#"(?:^|[\s=(\[{;:"'])(\.\.?/[A-Za-z0-9._/+-]+)"#).unwrap();
+    re.captures_iter(text)
+        .filter_map(|c| crate::repo::norm(fdir, &c[1]))
+        .collect()
 }

@@ -152,7 +152,15 @@ pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {
                 continue;
             }
         };
-        let new = classify::classify_paths(&repo, cfg, &paths);
+        let new = classify::classify_paths_revs(
+            &repo,
+            cfg,
+            &paths,
+            Some(classify::Revs {
+                base: parent,
+                head: commit,
+            }),
+        );
         compared += 1;
         let mut lost = Vec::new();
         let mut gained = false;

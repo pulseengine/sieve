@@ -75,6 +75,12 @@ pub struct Workflows {
     /// control, proof checks, equivalence jobs). check-workflows fails any of
     /// them that can be skipped (REQ-028).
     pub never_skip_jobs: Vec<String>,
+    /// REQ-030 (opt-in): a modification of one leaf workflow file that leaves
+    /// its triggers, its classifier jobs and every job's gating unchanged
+    /// selects the classes of the jobs it touches instead of every class.
+    /// git mode only (the base version is needed); anything else under
+    /// `.github/` still selects everything.
+    pub scope_leaf_edits: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -86,6 +92,11 @@ pub struct Config {
     pub run_all_suffixes: Vec<String>,
     pub run_all_basenames: Vec<String>,
     pub run_all_dirs: Vec<String>,
+    /// The `[run_all]` prefixes and basenames the adopter wrote (also merged
+    /// into the lists above). A narrowing of a built-in entry (REQ-027,
+    /// REQ-030) never narrows one of these.
+    pub adopter_run_all_prefixes: Vec<String>,
+    pub adopter_run_all_basenames: Vec<String>,
     pub inert_files: Vec<String>,
     pub inert_prefixes: Vec<String>,
     pub docs_namer_exclude: Vec<String>,
@@ -194,6 +205,14 @@ pub fn parse(text: &str, rel_path: &str) -> Result<Config> {
             ("prefixes", &mut c.run_all_prefixes),
             ("suffixes", &mut c.run_all_suffixes),
             ("basenames", &mut c.run_all_basenames),
+        ] {
+            if let Some(v) = t.get(k) {
+                dst.extend(strs(v, &format!("run_all.{k}"))?);
+            }
+        }
+        for (k, dst) in [
+            ("prefixes", &mut c.adopter_run_all_prefixes),
+            ("basenames", &mut c.adopter_run_all_basenames),
         ] {
             if let Some(v) = t.get(k) {
                 dst.extend(strs(v, &format!("run_all.{k}"))?);
@@ -326,6 +345,7 @@ fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Resu
             "job_outputs",
             "coe_exempt",
             "never_skip_jobs",
+            "scope_leaf_edits",
         ],
         "workflows",
     )?;
@@ -353,6 +373,11 @@ fn parse_workflows(t: &toml::map::Map<String, Value>, classes: &[Class]) -> Resu
             }
             w.job_outputs.insert(job.clone(), outs);
         }
+    }
+    if let Some(v) = t.get("scope_leaf_edits") {
+        w.scope_leaf_edits = v
+            .as_bool()
+            .ok_or("workflows.scope_leaf_edits: expected true or false")?;
     }
     if let Some(v) = t.get("never_skip_jobs") {
         w.never_skip_jobs = strs(v, "workflows.never_skip_jobs")?;

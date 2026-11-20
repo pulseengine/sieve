@@ -94,3 +94,53 @@ pub fn first_parent_commits(
     }
     Ok(out)
 }
+
+/// The text of `path` at merge-base(base, head) and at head, `None` where the
+/// path is absent or not a regular file there (REQ-030 reads a workflow's two
+/// versions). A blob that is not UTF-8 is an error.
+pub fn blob_pair(
+    root: &Path,
+    base: &str,
+    head: &str,
+    path: &str,
+) -> Result<(Option<String>, Option<String>), String> {
+    let repo = open(root)?;
+    let commit = |spec: &str| -> Result<gix::Commit<'_>, String> {
+        repo.rev_parse_single(spec)
+            .map_err(|e| format!("resolve {spec}: {e}"))?
+            .object()
+            .map_err(|e| format!("read {spec}: {e}"))?
+            .peel_to_commit()
+            .map_err(|e| format!("{spec} is not a commit: {e}"))
+    };
+    let base_c = commit(base)?;
+    let head_c = commit(head)?;
+    let mb = repo
+        .merge_base(base_c.id, head_c.id)
+        .map_err(|e| format!("merge-base {base} {head}: {e}"))?
+        .ok_or_else(|| format!("{base} and {head} have no merge base"))?;
+    let old_tree = repo
+        .find_commit(mb)
+        .map_err(|e| format!("read merge base: {e}"))?
+        .tree()
+        .map_err(|e| format!("merge-base tree: {e}"))?;
+    let new_tree = head_c.tree().map_err(|e| format!("{head} tree: {e}"))?;
+    let read = |tree: &gix::Tree<'_>, which: &str| -> Result<Option<String>, String> {
+        let Some(entry) = tree
+            .lookup_entry_by_path(path)
+            .map_err(|e| format!("{path} at {which}: {e}"))?
+        else {
+            return Ok(None);
+        };
+        if !entry.mode().is_blob() {
+            return Ok(None);
+        }
+        let obj = entry
+            .object()
+            .map_err(|e| format!("{path} at {which}: {e}"))?;
+        String::from_utf8(obj.data.clone())
+            .map(Some)
+            .map_err(|_| format!("{path} at {which} is not UTF-8"))
+    };
+    Ok((read(&old_tree, "merge base")?, read(&new_tree, head)?))
+}

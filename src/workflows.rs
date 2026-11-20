@@ -929,7 +929,11 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
         );
     }
     let steps = list(get(job, "steps"));
-    let step_if = Regex::new(r"\bneeds\.|\bsteps\.[A-Za-z0-9_-]+\.outputs\b").unwrap();
+    // Contexts are case-insensitive and also read by index (needs['x']).
+    let step_if = Regex::new(
+        r"(?i)\bneeds\s*[.\[]|\bsteps\s*(\.\s*[A-Za-z0-9_-]+|\[[^\]]*\])\s*\.\s*outputs\b|\btojson\s*\(\s*(needs|steps)\s*\)",
+    )
+    .unwrap();
     for (i, st) in steps.iter().enumerate() {
         let label = get_nn(st, "name")
             .map(py_str)
@@ -1082,6 +1086,281 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
         problem: None,
         used,
     }
+}
+
+// ------------------------------------------------- REQ-030 leaf-workflow scope
+
+/// Job keys that decide whether the job, or a job that needs it, runs.
+const GATING_KEYS: &[&str] = &[
+    "if",
+    "needs",
+    "continue-on-error",
+    "strategy",
+    "uses",
+    "outputs",
+];
+
+fn needs_of(job: &Yaml) -> Vec<String> {
+    match get(job, "needs") {
+        None | Some(Yaml::Null) => vec![],
+        Some(Yaml::Sequence(a)) => a.iter().map(py_str).collect(),
+        Some(other) => vec![py_str(other)],
+    }
+}
+
+fn on_of(wf: &Yaml) -> Option<&Yaml> {
+    match wf {
+        Yaml::Mapping(h) => h
+            .iter()
+            .find(|(k, _)| matches!(k, Yaml::Bool(true)))
+            .map(|(_, v)| v),
+        _ => None,
+    }
+    .or_else(|| get(wf, "on"))
+}
+
+/// A YAML merge key anywhere below `y`: `get` does not follow it, so a gating
+/// key could hide behind one.
+fn has_merge_key(y: &Yaml) -> bool {
+    match y {
+        Yaml::Mapping(h) => h.iter().any(|(k, v)| key_is(k, "<<") || has_merge_key(v)),
+        Yaml::Sequence(a) => a.iter().any(has_merge_key),
+        _ => false,
+    }
+}
+
+/// The steps that carry an `if:` or `continue-on-error:`: the `if:` of each,
+/// and the whole step where it has `continue-on-error:` (moving a command into
+/// or out of such a step changes whether its failure fails the job).
+fn step_gates(job: &Yaml) -> Vec<(Option<&Yaml>, Option<&Yaml>)> {
+    list(get(job, "steps"))
+        .into_iter()
+        .filter(|s| has(s, "if") || has(s, "continue-on-error"))
+        .map(|s| (get(s, "if"), has(s, "continue-on-error").then_some(s)))
+        .collect()
+}
+
+/// A step `if:` that reads a context an edit (or another job) can change:
+/// anything but `github`, `runner` and the status functions. Contexts are
+/// case-insensitive and also read as `needs['x']` or `toJSON(needs)`.
+fn step_if_reads_mutable(cond: &str) -> bool {
+    Regex::new(r"(?i)\b(needs|steps|env|jobs|matrix|strategy|inputs|vars|secrets)\b")
+        .unwrap()
+        .is_match(cond)
+}
+
+/// REQ-030: the classes a modification of the leaf workflow `file` selects,
+/// as class -> the jobs that select it, given its text at the merge base and
+/// at head. `Err` says why the change still selects everything.
+///
+/// Scoped only when the edit cannot change what is skipped: everything
+/// outside `jobs:` is unchanged (triggers, env, permissions, concurrency,
+/// defaults), the workflow is not reusable, no job is removed, every
+/// job that runs `sieve classify` is unchanged, and no changed job changes a
+/// gating key or a step's `if:`/`continue-on-error:`. The changed and added jobs, every
+/// job that needs one (transitively), and every job those need must each be
+/// ungated, `always()`/`!cancelled()`, or carry the exact classifier `if:`
+/// wired to a classifier job in this file; the outputs they read are the
+/// selected classes. A job among the changed ones or their dependents whose
+/// steps are gated on job or step outputs selects everything.
+pub fn leaf_scope(
+    cfg: &Config,
+    file: &str,
+    base: &str,
+    head: &str,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let parse = |t: &str, which: &str| -> Result<Yaml, String> {
+        match rivet_yaml::from_str::<Yaml>(t) {
+            Ok(y @ Yaml::Mapping(_)) => Ok(y),
+            Ok(_) => Err(format!("{file} at {which} is not a mapping")),
+            Err(e) => Err(format!("{file} at {which} is unparseable ({e})")),
+        }
+    };
+    let (b, h) = (parse(base, "the merge base")?, parse(head, "head")?);
+    let outside = |y: &Yaml| -> Vec<(Yaml, Yaml)> {
+        match y {
+            Yaml::Mapping(m) => m
+                .iter()
+                .filter(|(k, _)| !key_is(k, "jobs"))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => vec![],
+        }
+    };
+    if outside(&b) != outside(&h) {
+        return Err(format!(
+            "{file} changed outside `jobs:` (triggers, env, permissions, concurrency or defaults)"
+        ));
+    }
+    if has_merge_key(&b) || has_merge_key(&h) {
+        return Err(format!("{file} uses a YAML merge key (`<<:`)"));
+    }
+    let triggers: Vec<String> = match on_of(&h) {
+        Some(Yaml::Mapping(m)) => m.iter().map(|(k, _)| py_str(k)).collect(),
+        Some(other) => members(other),
+        None => return Err(format!("{file} has no `on:`")),
+    };
+    if triggers.iter().any(|t| t == "workflow_call") {
+        return Err(format!(
+            "{file} is a reusable workflow (`on: workflow_call`)"
+        ));
+    }
+    let (Some(Yaml::Mapping(_)), Some(Yaml::Mapping(_))) = (get(&b, "jobs"), get(&h, "jobs"))
+    else {
+        return Err(format!("{file} has no `jobs:` mapping"));
+    };
+    let bmap: BTreeMap<String, &Yaml> = entries(get(&b, "jobs")).into_iter().collect();
+    let hmap: BTreeMap<String, &Yaml> = entries(get(&h, "jobs")).into_iter().collect();
+    let removed: Vec<&String> = bmap.keys().filter(|k| !hmap.contains_key(*k)).collect();
+    if !removed.is_empty() {
+        return Err(format!("{file} removes jobs {removed:?}"));
+    }
+    let cls = classifier_jobs(&h);
+    let bcls = classifier_jobs(&b);
+    if cls.keys().ne(bcls.keys()) {
+        return Err(format!("{file} changed which jobs run `sieve classify`"));
+    }
+    // GitHub matches `needs:` case-insensitively; the closures below match
+    // exactly, so an entry that is not exactly a job id selects everything.
+    for m in [&bmap, &hmap] {
+        for (jid, job) in m {
+            if let Some(n) = needs_of(job).into_iter().find(|n| !m.contains_key(n)) {
+                return Err(format!(
+                    "{file}: job {jid} needs `{n}`, which is not exactly a job id"
+                ));
+            }
+        }
+    }
+    let mut changed: BTreeSet<String> = BTreeSet::new();
+    for (jid, hjob) in &hmap {
+        // An added job is a changed job with nothing to compare: no job in
+        // the base can need it, and its own gate decides its classes below.
+        let Some(&bjob) = bmap.get(jid) else {
+            changed.insert(jid.clone());
+            continue;
+        };
+        if bjob == *hjob {
+            continue;
+        }
+        if cls.contains_key(jid) {
+            return Err(format!(
+                "{file}: job {jid} runs `sieve classify` and changed (classifier wiring)"
+            ));
+        }
+        for k in GATING_KEYS {
+            if get(bjob, k) != get(hjob, k) {
+                return Err(format!("{file}: job {jid} changed its `{k}:`"));
+            }
+        }
+        if step_gates(bjob) != step_gates(hjob) {
+            return Err(format!(
+                "{file}: job {jid} changed a step's `if:` or `continue-on-error:`"
+            ));
+        }
+        changed.insert(jid.clone());
+    }
+    if changed.is_empty() {
+        return Err(format!(
+            "{file}: no job changed as parsed (a comment or layout edit is not scoped)"
+        ));
+    }
+    // A job that needs a changed job reads its result or outputs.
+    let mut affected = changed.clone();
+    loop {
+        let grown: Vec<String> = hmap
+            .iter()
+            .filter(|(j, job)| {
+                !affected.contains(*j) && needs_of(job).iter().any(|n| affected.contains(n))
+            })
+            .map(|(j, _)| j.clone())
+            .collect();
+        if grown.is_empty() {
+            break;
+        }
+        affected.extend(grown);
+    }
+    for j in &affected {
+        if cls.contains_key(j) {
+            return Err(format!("{file}: classifier job {j} needs a changed job"));
+        }
+        // A matrix computed from an expression (fromJSON(needs.x.outputs.m))
+        // can come out empty, and an empty matrix reports the job skipped.
+        let mut strategy = String::new();
+        if let Some(s) = get(hmap[j], "strategy") {
+            flatten(s, &mut strategy);
+        }
+        if strategy.contains("${{") {
+            return Err(format!(
+                "{file}: job {j} has a strategy computed from an expression"
+            ));
+        }
+        for st in list(get(hmap[j], "steps")) {
+            if step_if_reads_mutable(&get(st, "if").map(py_str).unwrap_or_default()) {
+                return Err(format!(
+                    "{file}: job {j} has a step gated on a context other than github or runner"
+                ));
+            }
+        }
+    }
+    // A skipped need skips the job that needs it.
+    let mut closure = affected.clone();
+    let mut stack: Vec<String> = affected.iter().cloned().collect();
+    while let Some(j) = stack.pop() {
+        for n in needs_of(hmap[&j]) {
+            if !hmap.contains_key(&n) {
+                return Err(format!("{file}: job {j} needs `{n}`, which is not a job"));
+            }
+            if closure.insert(n.clone()) {
+                stack.push(n);
+            }
+        }
+    }
+    let names: BTreeSet<&str> = cfg.classes.iter().map(|c| c.name.as_str()).collect();
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for j in &closure {
+        let job = hmap[j];
+        if cls.contains_key(j) {
+            continue; // unchanged, ungated (classifier_wiring rejects an if:)
+        }
+        let Some(cond) = get_nn(job, "if") else {
+            continue; // runs whenever the workflow runs
+        };
+        if unconditional_if(cond) {
+            continue;
+        }
+        let Yaml::String(cond) = cond else {
+            return Err(format!("{file}: job {j} has a non-string `if:`"));
+        };
+        let (c, outs) = parse_gate_if(cond).map_err(|why| format!("{file}: job {j}: {why}"))?;
+        let Some((_, wired)) = cls.get(&c) else {
+            return Err(format!(
+                "{file}: job {j} reads needs.{c}, which does not run `sieve classify`"
+            ));
+        };
+        if !needs_of(job).contains(&c) {
+            return Err(format!(
+                "{file}: job {j} reads needs.{c} but does not need it"
+            ));
+        }
+        let probs = classifier_wiring(&h, &c, &cfg.path);
+        if !probs.is_empty() {
+            return Err(format!("{file}: {}", probs.join("; ")));
+        }
+        for o in outs {
+            if !wired.contains(&o) {
+                return Err(format!(
+                    "{file}: job {j} reads output {o:?}, which job {c} does not wire to the classifier step"
+                ));
+            }
+            if !names.contains(o.as_str()) {
+                return Err(format!(
+                    "{file}: job {j} reads output {o:?}, which is not a class"
+                ));
+            }
+            out.entry(o).or_default().insert(j.clone());
+        }
+    }
+    Ok(out)
 }
 
 // ------------------------------------------------------------------- report

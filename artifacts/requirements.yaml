@@ -71,11 +71,7 @@ artifacts:
     type: requirement
     title: Treat CI, toolchain, build-system and sieve config paths as run-all paths
     status: verified
-    description: >
-      .github/**, the consumer's tools/** config, .cargo/** at any level,
-      Cargo.lock, rust-toolchain*, BUILD, *.bzl, MODULE.bazel*, .bazelrc,
-      .bazelversion, varve.toml, sieve.toml and committed graph snapshots.
-      A run-all reason names the path, never with the "internal:" prefix.
+    description: ".github/**, the consumer's tools/** config, .cargo/** at any level, Cargo.lock, rust-toolchain*, BUILD, *.bzl, MODULE.bazel*, .bazelrc, .bazelversion, varve.toml, sieve.toml and committed graph snapshots. A run-all reason names the path, never with the \"internal:\" prefix. Amended (owner, 2026-11-20; see the requirement deriving from this one): with [workflows] scope_leaf_edits = true, a leaf-workflow edit that leaves triggers, classifier jobs and gating unchanged selects only the classes of the jobs it touches."
     release: v0.1.0
     fields:
       priority: must
@@ -480,22 +476,15 @@ artifacts:
   - id: REQ-027
     type: requirement
     title: A nested workspace's own Cargo.lock belongs to the classes that build that workspace
-    status: draft
+    status: implemented
     release: v0.3.0
-    description: >
-      Measured on gale main e85b762 (the 25 commits since gale#491): 3 of
-      them ran everything only because a nested workspace's lockfile changed
-      (os/gust/Cargo.lock, drivers/sen66-thin/Cargo.lock). A Cargo.lock that
-      sits beside a manifest declaring its own [workspace] affects only that
-      workspace's builds, so it is claimed by every class whose Cargo walk
-      reaches that root, and it stays run-all when no class does. The
-      repository-root Cargo.lock stays a built-in run-all path. gale agrees
-      (2026-11-19). An equivalence run against the consumer's old detector
-      gates the change.
+    description: "Measured on gale main e85b762 (the 25 commits since gale#491): 3 of them ran everything only because a nested workspace's lockfile changed (os/gust/Cargo.lock, drivers/sen66-thin/Cargo.lock). A Cargo.lock beside a manifest declaring its own [workspace] pins that workspace's builds. The root walk of every class whose package Cargo builds in that workspace claims it (source cargo-lock; the workspace is found as Cargo finds it, a root whose exclude covers the package, and no members entry does, is skipped; a crate reached only as a path dependency does not claim it). A change to it selects those classes plus every class with a claim inside the workspace directory. It still selects everything when: no root walk reaches it; a member manifest under it (by Cargo's rule or by nearest root) is claimed by no class; the member list reaches outside the directory; the adopter lists it, or the basename Cargo.lock, in [run_all]; or a tracked Bazel or Nix file may name it (the path, a label from any package above it, Cargo.lock together with the directory, .lock in a BUILD or Nix file at or above it, or a Nix relative path resolving to it): a crate_universe lockfile feeds Bazel targets sieve does not trace to it (DD-009; gale's tools/verus-strip/Cargo.lock is one). The repository-root Cargo.lock stays a built-in run-all path. gale agrees (2026-11-19). An equivalence run against the consumer's old detector gates adoption."
     fields: {priority: should, category: functional}
     links:
       - {type: constraint-satisfies, target: SC-006}
 
+      - type: derives-from
+        target: DD-009
   - id: REQ-028
     type: requirement
     title: Jobs a North Star guard requires to run can never be skipped
@@ -543,14 +532,9 @@ artifacts:
   - id: REQ-030
     type: requirement
     title: A change confined to one leaf workflow selects only that workflow's job classes
-    status: draft
+    status: implemented
     release: v0.3.0
-    description: >
-      Narrows the run-all rule for .github/ (amends REQ-005 and SSC-003;
-      owner decision required before implementation). A change to the
-      classify wiring, sieve.toml, a reusable workflow or a composite action
-      still selects everything; a leaf-workflow edit that weakens its own
-      gating still selects everything (negative control).
+    description: "Narrows the run-all rule for .github/ (amends REQ-005 and SSC-003; owner approved in the option dialog of 2026-11-20). Opt-in with [workflows] scope_leaf_edits = true, git mode only (the merge-base version is read through gix). A modification of one file directly under .github/workflows/ selects the classes read by the classifier if: of the changed and added jobs, every job that needs one of them (transitively) and every job those need. It still selects everything when: the file is added, deleted or reusable (on: workflow_call); anything outside jobs: changed; a job was removed; a job running sieve classify changed; a changed job changed if, needs, continue-on-error, strategy, uses or outputs, or a step's if/continue-on-error; a needs: entry is not exactly a job id; a step with continue-on-error changed; an affected job has a step if: reading a context other than github or runner, or a strategy computed from an expression; a job in the closure has an if: other than the exact classifier form or always()/!cancelled(); the file uses a YAML merge key; no job changed as parsed; or the adopter lists the file in [run_all]. Composite actions, reusable workflows, sieve.toml and anything else under .github/ select everything."
     fields: {priority: should, category: functional}
     links:
       - {type: constraint-satisfies, target: SC-006}

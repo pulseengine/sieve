@@ -68,6 +68,70 @@ A class with an input sieve cannot resolve (an `include!` built from an
 unknown env var, a non-literal `generate!` path, a stale Bazel snapshot)
 always runs.
 
+### Nested workspace lockfiles (REQ-027)
+
+A `Cargo.lock` beside a manifest that declares its own `[workspace]` pins that
+workspace's builds. sieve finds the workspace the way Cargo does: a root whose
+`exclude` covers a package is skipped. The root walk of every class whose
+package builds in that workspace claims the lockfile. A crate reached only as a
+path dependency doesn't, because it builds with its dependant's lock. A change
+to the lockfile selects those classes and every class with a claim inside the
+workspace directory. It still selects everything when:
+- no class's root walk reaches it;
+- a member manifest under it is claimed by no class, or the member list
+  reaches outside the directory;
+- `[run_all]` lists it, or lists the basename `Cargo.lock`;
+- a tracked Bazel or Nix file (`BUILD`, `MODULE.bazel*`, `WORKSPACE*`,
+  `*.bazel`, `*.bzl`, `*.star`, `*.nix`) may name it, by any of:
+  - its path;
+  - a label from any package above it;
+  - `Cargo.lock` together with its directory;
+  - `.lock` in a BUILD or Nix file at or above it;
+  - a relative path in a Nix file that resolves to it.
+
+  A crate_universe lockfile feeds Bazel targets that sieve does not trace back
+  to it (DD-009).
+
+The repository-root `Cargo.lock` always selects everything.
+
+### Scoped leaf-workflow edits (opt-in, REQ-030)
+
+With `[workflows] scope_leaf_edits = true`, an edit to one file directly under
+`.github/workflows/` can select less than everything. In git mode sieve reads
+the file at the merge base and at head. If only job bodies changed, it selects
+the classes the classifier `if:` reads for:
+- the changed and added jobs;
+- every job that needs a changed job, transitively;
+- every job those need.
+
+An ungated changed job selects nothing, because it runs on every pull request
+anyway. The edit still selects everything when:
+- the file is added, deleted or reusable (`on: workflow_call`);
+- anything outside `jobs:` changed;
+- a job is removed;
+- a job running `sieve classify` changed;
+- a changed job changed `if`, `needs`, `continue-on-error`, `strategy`, `uses`
+  or `outputs`, or a step's `if`/`continue-on-error`;
+- a `needs:` entry is not exactly a job id (GitHub matches it ignoring case);
+- a step with `continue-on-error` changed;
+- an affected job has a step `if:` reading any context but `github` or
+  `runner`, or a `strategy` computed from an expression;
+- a job in the closure has any `if:` other than the exact classifier form or
+  `always()`/`!cancelled()`;
+- the file uses a YAML merge key;
+- nothing changed once parsed (comments, layout);
+- `[run_all]` lists the file.
+
+`--paths` has no base version, so there `.github/` still selects everything.
+Composite actions, reusable workflows and everything else under `.github/`
+also always select everything.
+
+Scoping decides only what this pull request runs. It does not re-check that an
+edited job's gate still covers what the job now builds: an edit that makes a
+b-gated job build class a's code is scoped to b, and later a-only changes skip
+that job. `check-workflows` gate (d) catches this for `cargo -p` and
+`--manifest-path`; the false-skip controls cover the rest.
+
 ## sieve.toml
 
 ```toml
