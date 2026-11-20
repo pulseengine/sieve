@@ -132,7 +132,9 @@ Scope (plan in docs/plan-v0.3.0.md, bets A to E). Shipped requirements:
 
 The bet features FEAT-008..011 carry fleet acceptance criteria (plant
 controls per adopter, gale's 30 PRs, kiln, signing) that are not met at this
-tag; where they belong is an owner decision (notice 20261120T064025-60a932).
+tag. Owner option dialog (2026-11-20): they move to v0.4.0, with REQ-022
+(its only evidence is the author-run DD-009). `rivet release status v0.3.0`:
+cuttable.
 
 Evidence at prep time:
 - `cargo test --no-fail-fast` green on main cafcf4f; Test and rivet validate
