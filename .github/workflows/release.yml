@@ -67,10 +67,6 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             musl: true
-          # x86_64 cross-compiles on the arm64 runner; the smoke test runs it
-          # under Rosetta 2.
-          - target: x86_64-apple-darwin
-            os: macos-15
           - target: aarch64-apple-darwin
             os: macos-latest
     steps:
@@ -180,7 +176,7 @@ jobs:
           mkdir -p release-assets
           find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
           n=$(ls release-assets/*.tar.gz | wc -l)
-          test "$n" -eq 4 || { echo "expected 4 archives, found $n"; exit 1; }
+          test "$n" -eq 3 || { echo "expected 3 archives, found $n"; exit 1; }
           ls -la release-assets/
 
       # The SBOM goes in before the sums, so its digest is signed too.
@@ -283,6 +279,10 @@ jobs:
           notes=$(mktemp)
           cat > "$notes" <<EOF
           Work in progress; no production-ready claims.
+
+          No Intel macOS (x86_64-apple-darwin) build from v0.3.0 on: the
+          fleet stopped Intel macOS builds (owner, 2026-11-20). Apple silicon,
+          Linux x86_64 and Linux aarch64 archives are published.
 
           Falsification: this release is wrong if a change to a file that a
           configured class's build or tests read yields `false` for that class
