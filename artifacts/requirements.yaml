@@ -571,6 +571,31 @@ artifacts:
     links:
       - {type: satisfies, target: SSC-002}
 
+  - id: REQ-032
+    type: requirement
+    title: Every lockfile is committed, CI resolves with it locked, and the audit covers it
+    status: draft
+    release: v0.4.0
+    description: >
+      Every tracked Cargo.toml, nested workspaces included, resolves with
+      `cargo metadata --locked` in CI, so a missing, gitignored or stale
+      lockfile turns the Test job red. cargo audit runs over every tracked
+      Cargo.lock and fails on a vulnerability. A tracked manifest of another
+      ecosystem fails until it has its own gate. Planted controls in the
+      same job (a stale lock, a gitignored nested lock, a nested lock with a
+      RustSec vulnerability) must each be rejected, or the job fails.
+    fields:
+      priority: must
+      category: constraint
+      progress: >
+        2026-11-20: scripts/lockfiles.sh (locked, audit, controls) runs in the
+        Test job; cargo-audit v0.22.2 pinned. Informational advisories are
+        printed, not failed: heapless 0.8.0 (RUSTSEC-2026-0574..0582, unsound)
+        reaches sieve through faster-hex 0.10.1 from gix and needs heapless
+        0.9.4 upstream.
+    links:
+      - {type: satisfies, target: SSC-002}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
