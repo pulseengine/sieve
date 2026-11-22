@@ -281,6 +281,98 @@ fn job_name(job: &Yaml, jid: &str) -> String {
     }
 }
 
+/// sieve#30: the check names a job produces. A `name:` with
+/// `${{ matrix.<key> }}` expands once per matrix row, rows built as GitHub
+/// does: the cartesian product of the list-valued keys, each `include` entry
+/// added to every row whose original values it does not overwrite (or, if
+/// none, as a row of its own), rows matching an `exclude` entry dropped. A
+/// key a row lacks renders empty. A name with any other expression, or a
+/// matrix computed from an expression, is returned as written (and stays
+/// unmapped, which fails closed).
+fn matrix_names(job: &Yaml, jid: &str) -> Vec<String> {
+    let name = job_name(job, jid);
+    let key_re = Regex::new(r"\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}").unwrap();
+    if !key_re.is_match(&name) {
+        return vec![name];
+    }
+    if key_re.replace_all(&name, "").contains("${{") {
+        return vec![name];
+    }
+    let Some(Yaml::Mapping(m)) = get(job, "strategy").and_then(|s| get(s, "matrix")) else {
+        return vec![name];
+    };
+    // the cartesian product of the list-valued keys
+    let mut rows: Vec<BTreeMap<String, String>> = vec![BTreeMap::new()];
+    let mut originals: BTreeSet<String> = BTreeSet::new();
+    for (k, v) in m {
+        let k = py_str(k);
+        if k == "include" || k == "exclude" {
+            continue;
+        }
+        let Yaml::Sequence(vals) = v else {
+            return vec![name]; // computed from an expression
+        };
+        originals.insert(k.clone());
+        let mut next = Vec::new();
+        for r in &rows {
+            for x in vals {
+                let mut r = r.clone();
+                r.insert(k.clone(), py_str(x));
+                next.push(r);
+            }
+        }
+        rows = next;
+    }
+    let entry = |e: &Yaml| -> BTreeMap<String, String> {
+        entries(Some(e))
+            .into_iter()
+            .map(|(k, v)| (k, py_str(v)))
+            .collect()
+    };
+    if let Some(Yaml::Sequence(ex)) = get(&Yaml::Mapping(m.clone()), "exclude") {
+        for e in ex.iter().map(entry) {
+            rows.retain(|r| !e.iter().all(|(k, v)| r.get(k) == Some(v)));
+        }
+    }
+    let includes: Vec<BTreeMap<String, String>> = match get(&Yaml::Mapping(m.clone()), "include") {
+        Some(Yaml::Sequence(inc)) => inc.iter().map(entry).collect(),
+        _ => vec![],
+    };
+    if originals.is_empty() {
+        // only `include:`: each entry is a row
+        rows = includes;
+    } else {
+        let base = rows.len();
+        for e in includes {
+            let mut added = false;
+            for r in rows.iter_mut().take(base) {
+                let overwrites = e
+                    .iter()
+                    .any(|(k, v)| originals.contains(k) && r.get(k).is_some_and(|x| x != v));
+                if !overwrites {
+                    r.extend(e.clone());
+                    added = true;
+                }
+            }
+            if !added {
+                rows.push(e);
+            }
+        }
+    }
+    if rows.is_empty() {
+        return vec![name];
+    }
+    rows.iter()
+        .map(|r| {
+            key_re
+                .replace_all(&name, |c: &regex::Captures| {
+                    r.get(&c[1]).cloned().unwrap_or_default()
+                })
+                .into_owned()
+        })
+        .collect()
+}
+
 /// An if: that keeps a job (or step) running: exactly always() or !cancelled(),
 /// optionally inside one `${{ }}` wrapper.
 fn unconditional_if(cond: &Yaml) -> bool {
@@ -1019,7 +1111,8 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
         }
     }
 
-    if let Some(cond) = cond {
+    // sieve#30: exactly always() or !cancelled() never skips the job.
+    if let Some(cond) = cond.filter(|c| !unconditional_if(c)) {
         let Yaml::String(cond) = cond else {
             return skippable(
                 "if-form",
@@ -1058,7 +1151,17 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
                 );
             }
         }
-        let Some(allowed) = cfg.workflows.job_outputs.get(&name) else {
+        // a matrix name (`Test (${{ matrix.label }})`) maps under its base name too
+        let base = Regex::new(r"\s*\(.*\)\s*$")
+            .unwrap()
+            .replace(&name, "")
+            .into_owned();
+        let Some(allowed) = cfg
+            .workflows
+            .job_outputs
+            .get(&name)
+            .or_else(|| cfg.workflows.job_outputs.get(&base))
+        else {
             return skippable(
                 "job-not-mapped",
                 "gated by the classifier but not on the hand-maintained [workflows.job_outputs] map"
@@ -1857,9 +1960,13 @@ pub fn cmd_check_workflows(
     let mut idx: BTreeMap<String, Vec<Hit>> = BTreeMap::new();
     for (wi, wf) in wfs.iter().enumerate() {
         for (jid, job) in entries(get(&wf.doc, "jobs")) {
-            idx.entry(job_name(job, &jid))
-                .or_default()
-                .push(Hit { wf: wi, jid });
+            // sieve#30: a name built from `${{ matrix.<key> }}` is expanded per row
+            for name in matrix_names(job, &jid) {
+                idx.entry(name).or_default().push(Hit {
+                    wf: wi,
+                    jid: jid.clone(),
+                });
+            }
         }
     }
     let matrix_suffix = Regex::new(r"\s*\(.*\)\s*$").unwrap();
