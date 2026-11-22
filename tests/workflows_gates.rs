@@ -989,3 +989,34 @@ fn matrix_names_do_not_invent_contexts() {
     ]);
     assert!(bad.is_empty(), "plants not caught:\n{}", bad.join("\n"));
 }
+
+// rivet: verifies REQ-014
+#[test]
+fn an_always_gate_on_a_non_required_need_must_read_its_result() {
+    let gate = |steps: &str| W {
+        needs: Some("other".into()),
+        gate_if: Some("always()".into()),
+        gate_steps: steps.into(),
+        ..W::base()
+    };
+    // relay's kani-gate shape: the script fails on any non-success need
+    let reads = gate("    steps:\n      - run: test \"${{ needs.other.result }}\" = success\n");
+    let f = fixture(
+        "needs-result-read",
+        &reads.render(),
+        ONE,
+        &toml(false),
+        true,
+    );
+    let o = check_in(&f.root, &[]);
+    assert_eq!(o.code, Some(0), "{}", o.stdout);
+    // the same gate that never looks at the need passes on its failure
+    let bad = missed(vec![(
+        "needs-result-unread",
+        gate("    steps: [{run: 'true'}]\n"),
+        ONE,
+        "b",
+        "needs-result-unread",
+    )]);
+    assert!(bad.is_empty(), "plants not caught:\n{}", bad.join("\n"));
+}

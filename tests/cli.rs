@@ -448,3 +448,72 @@ fn check_graph_fails_a_hand_entry_that_matches_no_tracked_file() {
     );
     assert!(!out.contains("`README.md` matches no"), "{out}");
 }
+
+// rivet: verifies REQ-034
+#[test]
+fn a_github_claim_counts_for_check_graph_under_scope_leaf_edits() {
+    let d = tree("github-claim");
+    fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    fs::write(
+        d.join(".github/workflows/ci.yml"),
+        "on: pull_request\njobs: {}\n",
+    )
+    .unwrap();
+    let cfg = |scoped: bool| {
+        format!(
+            "[class.a]\ncargo = [\"a/Cargo.toml\"]\n[class.github]\nhand = [\".github/\"]\n{}",
+            if scoped {
+                "[workflows]\nscope_leaf_edits = true\n"
+            } else {
+                ""
+            }
+        )
+    };
+    for args in [
+        &["init", "-q"][..],
+        &["add", "-A"][..],
+        &["commit", "-q", "-m", "x"][..],
+    ] {
+        let o = Command::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&d)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}");
+    }
+    let run = |scoped: bool| {
+        fs::write(d.join("sieve.toml"), cfg(scoped)).unwrap();
+        Command::new(BIN)
+            .args([
+                "check-graph",
+                "--config",
+                "sieve.toml",
+                "--control",
+                "graph-inputs",
+                "--format",
+                "json",
+            ])
+            .current_dir(&d)
+            .output()
+            .unwrap()
+    };
+    let o = run(true);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    // without scoping every .github/ path runs everything, so the claim is inert
+    let o = run(false);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("github: the graph claims no tracked file"));
+}
