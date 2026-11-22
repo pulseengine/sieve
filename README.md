@@ -125,6 +125,9 @@ selects everything when:
 - a step with `continue-on-error` changed;
 - an affected job has a step `if:` reading any context but `github` or
   `runner`, or a `strategy` computed from an expression;
+- an affected job reads `needs` outside its `if:` and `needs:` (in `env:`,
+  `with:` or a `run:` script, which could skip its own work on a classifier
+  output);
 - a job in the closure has any `if:` other than the exact classifier form or
   `always()`/`!cancelled()`;
 - the file uses a YAML merge key;
@@ -138,8 +141,9 @@ also always select everything, with two exceptions (v0.4.1, sieve#27):
 - **A file with no classifier (REQ-035).** When the edit above would select
   everything, but neither version of the file hosts a job running
   `sieve classify`, calls a reusable workflow, has a job `if:` other than
-  `always()`/`!cancelled()`, or has a step `if:` reading `needs`, it selects no
-  class instead: `needs:` stays inside a file, so none of its jobs can be
+  `always()`/`!cancelled()`, has a step `if:` reading any context but `github`
+  or `runner`, or has a job that reads `needs` outside its `needs:` list, it
+  selects no class instead: `needs:` stays inside a file, so none of its jobs can be
   gated, and they all run anyway. The `if:` condition covers a classifier sieve
   does not recognise (a wrapper script, an action). Everything still runs when
   either version uses a merge key, has no `on:`, is reusable or triggered by
@@ -153,11 +157,15 @@ also always select everything, with two exceptions (v0.4.1, sieve#27):
   contains their name.
 
 Every scoped `.github/` edit (REQ-030, REQ-035, REQ-036) also selects the
-classes of gated jobs that lint the whole repository: a step whose `run:` or
-`uses:` names actionlint, yamllint, zizmor, pre-commit, prek, super-linter,
-megalinter, checkov or prettier. A linter that a script or `make` target runs
-is not seen: give its class a `.github/` claim (`hand = [".github/"]`) when
-scoping is on.
+classes gating jobs that lint the whole repository, and every job those
+need: a step whose `run:` or `uses:` (a local composite action included)
+names actionlint, yamllint, zizmor, pre-commit, prek, super-linter,
+megalinter, checkov, prettier, typos, codespell, reuse, markdownlint, lychee,
+check-jsonschema, editorconfig-checker, biome, dprint or taplo. A linter job
+gated by an `if:` that is not the classifier form makes the edit run
+everything. Only those names are detected: any other check that reads
+`.github/` (a script, a `make` target, another tool) needs its class to claim
+`.github/` (`hand = [".github/"]`) when scoping is on.
 
 Scoping decides only what this pull request runs. It does not re-check that an
 edited job's gate still covers what the job now builds: an edit that makes a

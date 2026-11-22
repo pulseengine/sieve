@@ -653,23 +653,26 @@ artifacts:
       With scope_leaf_edits, a modified or added file directly under
       .github/workflows/ that REQ-030 cannot pin to single jobs selects no
       class when neither version hosts a job running sieve classify, calls a
-      reusable workflow, has a job if: other than always()/!cancelled(), or a
-      step if: reading needs (a classifier sieve does not recognise still gates
-      through if:): needs: stays inside a file, so none of its jobs can be
+      reusable workflow, has a job if: other than always()/!cancelled(), a step
+      if: reading any context but github or runner, or a job reading needs
+      outside its needs: list (a classifier sieve does not recognise still gates
+      through these): needs: stays inside a file, so none of its jobs can be
       classifier-gated and every one of them runs anyway. Everything still runs
       when either version uses a merge key, has no on:, is reusable
       (workflow_call) or triggered by workflow_run; when another workflow runs
       on workflow_run of it (by name or path, or with no workflows list); when
       the file is deleted; and when it hosts a classifier or calls a reusable
       workflow. Each of those has its own planted control. Every scoped .github/
-      edit also selects the classes of gated jobs whose steps run a
-      whole-repository linter (actionlint, yamllint, zizmor, pre-commit, ...);
-      a linter run from a script is not seen, so its class claims .github/. Owner approved
+      edit also selects the classes gating jobs whose steps (or local composite
+      actions) run a listed whole-repository linter, and every job those need;
+      a linter job with a non-classifier if: runs everything; any other check
+      that reads .github/ needs a .github/ claim. REQ-030 also refuses an
+      affected job that reads needs outside its if: and needs:. Owner approved
       2026-11-22 (relayed by pulseengine.eu), with that condition (sieve#27 A).
     fields:
       priority: should
       category: functional
-      review: author-verified only (tests/leaf_scope.rs; 3 rule mutants killed); fresh-context security review 2026-11-22 found 2 false skips, fixed with controls
+      review: author-verified only (tests/leaf_scope.rs; 3 rule mutants killed); fresh-context security review 2026-11-22 found 2 false skips, then 3 bypasses on re-check, all fixed with controls
     links:
       - {type: constraint-satisfies, target: SC-006}
       - {type: derives-from, target: REQ-030}

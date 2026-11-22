@@ -622,14 +622,20 @@ fn an_unscopable_edit_to_a_file_without_a_classifier_selects_nothing() {
         &[(p, Some(plain("", "env:\n  X: 1\n", PLAIN_JOB)))],
     );
     assert_file_wide(&v, &[]);
-    // a step gated on another context, changed
+    // a step `if:` on the github context, changed
     let gated = |c: &str| {
         format!("  build:\n    runs-on: ubuntu-latest\n    steps:\n      - id: s\n        run: make\n      - if: {c}\n        run: make more\n")
     };
     let v = edit_files(
         "fw-step-if",
-        &[(p, plain("", "", &gated("steps.s.outcome == 'success'")))],
-        &[(p, Some(plain("", "", &gated("env.X == '1'"))))],
+        &[(
+            p,
+            plain("", "", &gated("github.event_name == 'pull_request'")),
+        )],
+        &[(
+            p,
+            Some(plain("", "", &gated("github.ref == 'refs/heads/main'"))),
+        )],
     );
     assert_file_wide(&v, &[]);
     // an added file
@@ -942,4 +948,129 @@ fn a_service_file_claimed_by_name_selects_its_class_and_a_submodule_does_not_blo
     git(&d, &["commit", "-q", "-am", "edit"]);
     let v = classify_git(&d, &base);
     assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_gate_passed_through_env_keeps_file_wide_off() {
+    // the wrapper classifier's output reaches a step through job env (e6)
+    let wf = |cmd: &str| {
+        format!(
+            "name: w\non:\n  pull_request:\n  merge_group:\njobs:\n  changes:\n    runs-on: ubuntu-latest\n    outputs:\n      a: ${{{{ steps.c.outputs.a }}}}\n    steps:\n      - id: c\n        run: ./ci/classify.sh\n  ja:\n    needs: changes\n    runs-on: ubuntu-latest\n    env:\n      A: ${{{{ needs.changes.outputs.a }}}}\n    steps:\n      - if: env.A != 'false'\n        run: {cmd}\n"
+        )
+    };
+    let p = ".github/workflows/w.yml";
+    let v = edit_files(
+        "rv2-env-gate",
+        &[(p, wf("make a"))],
+        &[(p, Some(wf("make a-broken")))],
+    );
+    assert_eq!(v["run_all"], true, "{v}");
+    // the same gate inside `run:` with no step `if:` (only the job reading
+    // `needs` shows it): `[ "$A" = false ] && exit 0` before the work
+    let wf2 = |cmd: &str| {
+        wf(cmd).replace(
+            "      - if: env.A != 'false'\n        run: ",
+            "      - run: '[ \"$A\" = false ] && exit 0; ",
+        ) + ""
+    };
+    let v = edit_files(
+        "rv2-env-run-gate",
+        &[(p, wf2("make a'"))],
+        &[(p, Some(wf2("make a-broken'")))],
+    );
+    assert_eq!(v["run_all"], true, "{v}");
+    // the same job, with an edit outside `jobs:` (REQ-030 refuses; only the
+    // file-wide rule's `needs` check keeps everything running)
+    let v = edit_files(
+        "rv2-env-run-gate-top",
+        &[(p, wf2("make a'"))],
+        &[(
+            p,
+            Some(wf2("make a'").replacen("jobs:\n", "env:\n  X: 1\njobs:\n", 1)),
+        )],
+    );
+    assert_eq!(v["run_all"], true, "{v}");
+}
+
+/// lint.yml with a classifier and a job gated on class b whose steps are `steps`.
+fn lint_wf_steps(steps: &str, job_if: Option<&str>, extra_jobs: &str) -> String {
+    let ifl = job_if.map(|c| format!("    if: {c}\n")).unwrap_or_default();
+    format!(
+        "name: lint\non:\n  pull_request:\n  merge_group:\njobs:\n{CLASSIFIER}{extra_jobs}  lint:\n    needs: changes\n{ifl}    runs-on: ubuntu-latest\n    steps:\n{steps}"
+    )
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn linter_detection_covers_more_tools_composite_actions_and_gated_ancestors() {
+    let n = ".github/workflows/new.yml";
+    let added = |name: &str, files: Vec<(&str, String)>| {
+        edit_files(name, &files, &[(n, Some(plain("", "", PLAIN_JOB)))])
+    };
+    let gb = gate("b");
+    // e10: typos and reuse
+    let v = added(
+        "rv2-typos",
+        vec![(
+            ".github/workflows/lint.yml",
+            lint_wf_steps("      - run: typos && reuse lint\n", Some(&gb), ""),
+        )],
+    );
+    assert_scoped(&v, &["b"]);
+    // e13: a linter inside a local composite action
+    let v = added(
+        "rv2-composite",
+        vec![
+            (
+                ".github/workflows/lint.yml",
+                lint_wf_steps("      - uses: ./.github/actions/lint\n", Some(&gb), ""),
+            ),
+            (
+                ".github/actions/lint/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: actionlint\n      shell: bash\n"
+                    .into(),
+            ),
+        ],
+    );
+    assert_scoped(&v, &["b"]);
+    // a linter job with no if: of its own, needing a b-gated job
+    let gated = format!(
+        "  prep:\n    needs: changes\n    if: {gb}\n    runs-on: ubuntu-latest\n    steps:\n      - run: make prep\n"
+    );
+    let wf = lint_wf_steps("      - run: actionlint\n", None, &gated).replacen(
+        "  lint:\n    needs: changes\n",
+        "  lint:\n    needs: [prep]\n",
+        1,
+    );
+    let v = added("rv2-ancestor", vec![(".github/workflows/lint.yml", wf)]);
+    assert_scoped(&v, &["b"]);
+    // e12: a linter gated by an `if:` that is not the classifier form
+    let v = added(
+        "rv2-noncanonical",
+        vec![(
+            ".github/workflows/lint.yml",
+            lint_wf_steps(
+                "      - run: actionlint\n",
+                Some("needs.changes.outputs.b == 'true'"),
+                "",
+            ),
+        )],
+    );
+    assert_run_all(&v, "not the classifier form");
+}
+
+// rivet: verifies REQ-036
+#[cfg(unix)]
+#[test]
+fn a_symlink_whose_target_names_a_service_file_keeps_it_run_all() {
+    let p = ".github/CODEOWNERS";
+    let (d, _) = history("rv2-symlink", CFG_ON, &[(p, "* @a\n".into())], &[]);
+    std::os::unix::fs::symlink(".github/CODEOWNERS", d.join("docs-owners")).unwrap();
+    git(&d, &["add", "docs-owners"]);
+    git(&d, &["commit", "-q", "-m", "link"]);
+    let base = git(&d, &["rev-parse", "HEAD"]);
+    fs::write(d.join(p), "* @b\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "edit"]);
+    assert_eq!(classify_git(&d, &base)["run_all"], true);
 }

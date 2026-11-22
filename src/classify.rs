@@ -212,11 +212,19 @@ fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
         if f == p || f == cfg.path || service_needles(&f).is_some() {
             continue;
         }
-        let bytes = match std::fs::read(repo.path(&f)) {
-            Ok(b) => b.to_ascii_lowercase(),
+        // A symlink is judged by its target path (which may name the file);
+        // only a real directory (a submodule's gitlink) is skipped.
+        let full = repo.path(&f);
+        let bytes = match std::fs::symlink_metadata(&full) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) if repo.path(&f).is_dir() => continue,
             Err(_) => return None,
+            Ok(m) if m.file_type().is_symlink() => std::fs::read_link(&full)
+                .ok()?
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .into_bytes(),
+            Ok(m) if m.is_dir() => continue,
+            Ok(_) => std::fs::read(&full).ok()?.to_ascii_lowercase(),
         };
         if needles
             .iter()
@@ -250,7 +258,16 @@ fn service_needles(p: &str) -> Option<&'static [&'static str]> {
 /// cannot be read fails the scoping.
 fn select_linters(repo: &Repo, v: &mut Verdict) -> Result<(), String> {
     let all = other_workflows(repo, "")?;
-    for c in crate::workflows::linter_classes(&all) {
+    // local composite actions, keyed by directory, for `uses: ./path`
+    let mut actions = BTreeMap::new();
+    for f in repo.tracked()? {
+        let b = basename(&f);
+        if b == "action.yml" || b == "action.yaml" {
+            let text = repo.read(&f).map_err(|e| format!("{f} unreadable: {e}"))?;
+            actions.insert(dirname(&f).to_string(), text);
+        }
+    }
+    for c in crate::workflows::linter_classes(&all, &actions)? {
         if let Some(sel) = v.classes.get_mut(&c) {
             *sel = true;
         }
