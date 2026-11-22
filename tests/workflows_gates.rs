@@ -902,7 +902,8 @@ fn missing_inputs_are_refused_and_bad_usage_is_exit_2() {
 #[test]
 fn matrix_names_and_unconditional_ifs_are_accepted() {
     let include = "    strategy:\n      fail-fast: false\n      matrix:\n        include:\n          - { label: linux, runner: ubuntu-24.04 }\n          - { label: macos, runner: macos-latest }\n          - { label: windows, runner: windows-latest }\n";
-    let lists = "    strategy:\n      matrix:\n        os: [linux, macos]\n        rust: [stable, beta]\n";
+    let lists =
+        "    strategy:\n      matrix:\n        os: [linux, macos]\n        rust: [stable, beta]\n";
     let cases: Vec<(&str, W, &str)> = vec![
         (
             // sieve#30: relay's Test (${{ matrix.label }}) over include
