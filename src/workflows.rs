@@ -1192,6 +1192,26 @@ fn job_skip_state(cfg: &Config, wf: &Wf, jid: &str, required_jids: &BTreeSet<Str
             continue;
         }
         if !required_jids.contains(n) {
+            // An always()/!cancelled() job runs whatever its need did, so it is
+            // not skipped; it must still check the need's result itself, or a
+            // failed or skipped need lets it report success (relay's gates).
+            if cond.is_some_and(unconditional_if) {
+                let mut text = String::new();
+                flatten(job, &mut text);
+                let reads = Regex::new(&format!(
+                    r"(?i)needs\s*(\.\s*{n}|\[\s*['\x22]{n}['\x22]\s*\])\s*\.\s*result|tojson\(\s*needs\s*\)",
+                    n = regex::escape(n)
+                ))
+                .unwrap();
+                if reads.is_match(&text) {
+                    continue;
+                }
+                return skippable(
+                    "needs-result-unread",
+                    format!("needs {n}, which is not itself required, and no step reads needs.{n}.result: with `if:` always()/!cancelled() it runs when {n} fails or skips, and reports success unless it checks"),
+                    used,
+                );
+            }
             return skippable(
                 "needs-not-required",
                 format!("needs {n}, which is not itself required: if {n} fails or skips, this job is skipped and reports success"),

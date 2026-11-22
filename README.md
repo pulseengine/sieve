@@ -169,7 +169,8 @@ local `uses:` that resolves to no tracked file, a linter job gated by an
 step-level gate makes the edit run everything. Remote actions and remote
 reusable workflows are not inlined. Only those names are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
-`.github/` (`hand = [".github/"]`) when scoping is on.
+`.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
+under scoping.
 
 Scoping reads gates from the workflow text. A job that receives a gate out
 of band (it downloads an artifact the classifier wrote and exits early on it)
@@ -279,6 +280,9 @@ against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
   a required name built from `${{ matrix.<key> }}` is expanded per matrix
   row (list keys and `include:`), and the map takes the job under its
   base name (`Test` for `Test (${{ matrix.label }})`);
+  a job with `if: always()` or `!cancelled()` that needs a non-required
+  job passes only if a step reads that need's result (`needs.<x>.result`
+  or `toJSON(needs)`);
 - (c) the classifier selects everything on push, merge_group, no base, a bad
   base and an empty diff;
 - (d) cross-class builds (REQ-026): a gated job whose run step names a Cargo

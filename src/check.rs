@@ -176,7 +176,14 @@ pub fn cmd_check_graph(
                     });
                     let files: Vec<&String> = tracked
                         .iter()
-                        .filter(|f| cg.claims_path(f) && !is_run_all(cfg, f))
+                        // under scope_leaf_edits a .github/ claim takes effect (REQ-030,
+                        // REQ-035, REQ-036), so it counts
+                        .filter(|f| {
+                            cg.claims_path(f)
+                                && (!is_run_all(cfg, f)
+                                    || (cfg.workflows.scope_leaf_edits
+                                        && f.starts_with(".github/")))
+                        })
                         .collect();
                     r.expect(c, !files.is_empty(), "claims-nothing", || {
                         format!("{name}: the graph claims no tracked file")
