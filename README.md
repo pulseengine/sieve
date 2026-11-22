@@ -142,7 +142,8 @@ also always select everything, with two exceptions (v0.4.1, sieve#27):
   everything, but neither version of the file hosts a job running
   `sieve classify`, calls a reusable workflow, has a job `if:` other than
   `always()`/`!cancelled()`, has a step `if:` reading any context but `github`
-  or `runner`, or has a job that reads `needs` outside its `needs:` list, it
+  or `runner`, has a job that reads `needs` outside its `needs:` list, or has
+  a job that needs another (which could pass it a gate as an artifact), it
   selects no class instead: `needs:` stays inside a file, so none of its jobs can be
   gated, and they all run anyway. The `if:` condition covers a classifier sieve
   does not recognise (a wrapper script, an action). Everything still runs when
@@ -161,11 +162,18 @@ classes gating jobs that lint the whole repository, and every job those
 need: a step whose `run:` or `uses:` (a local composite action included)
 names actionlint, yamllint, zizmor, pre-commit, prek, super-linter,
 megalinter, checkov, prettier, typos, codespell, reuse, markdownlint, lychee,
-check-jsonschema, editorconfig-checker, biome, dprint or taplo. A linter job
-gated by an `if:` that is not the classifier form makes the edit run
-everything. Only those names are detected: any other check that reads
+check-jsonschema, editorconfig-checker, biome, dprint or taplo. Local
+composite actions and local reusable workflows are inlined, recursively; a
+local `uses:` that resolves to no tracked file, a linter job gated by an
+`if:` that is not the classifier form, or a linter step behind its own
+step-level gate makes the edit run everything. Remote actions and remote
+reusable workflows are not inlined. Only those names are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on.
+
+Scoping reads gates from the workflow text. A job that receives a gate out
+of band (it downloads an artifact the classifier wrote and exits early on it)
+is not seen by REQ-030; such a job must carry the classifier `if:` itself.
 
 Scoping decides only what this pull request runs. It does not re-check that an
 edited job's gate still covers what the job now builds: an edit that makes a

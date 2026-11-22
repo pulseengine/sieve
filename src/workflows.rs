@@ -1205,30 +1205,106 @@ pub fn linter_classes(
         r"(?i)\b(actionlint|yamllint|yaml-lint|zizmor|pre-commit|prek|super-linter|megalinter|mega-linter|checkov|prettier|typos|codespell|reuse|markdownlint|markdownlint-cli2|lychee|check-jsonschema|editorconfig-checker|biome|dprint|taplo)\b",
     )
     .unwrap();
-    // a step's text, with a local composite action (`uses: ./path`) inlined
-    let step_text = |st: &Yaml| -> String {
-        let mut t = String::new();
-        flatten(st, &mut t);
-        if let Some(u) = get(st, "uses").map(py_str) {
-            if let Some(local) = u.strip_prefix("./") {
-                if let Some(a) = actions.get(local.trim_end_matches('/')) {
-                    t.push_str(a);
+    let needs_word = Regex::new(r"(?i)\bneeds\b").unwrap();
+    let wf_by_path: BTreeMap<&str, &str> = workflows
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    // `text` with every local `uses: ./path` (a composite action or a
+    // reusable workflow) inlined, recursively; a local path that resolves to
+    // no tracked action or workflow fails, as does a cycle (seen once).
+    let uses_re = Regex::new(r##"(?m)\buses:\s*['"]?\./([^\s'"#]+)"##).unwrap();
+    fn norm_local(p: &str) -> Option<String> {
+        let mut parts: Vec<&str> = Vec::new();
+        for c in p.split('/') {
+            match c {
+                "" | "." => {}
+                ".." => {
+                    parts.pop()?;
                 }
+                c => parts.push(c),
             }
         }
-        t
-    };
+        Some(parts.join("/"))
+    }
+    fn expand(
+        text: &str,
+        uses_re: &Regex,
+        actions: &BTreeMap<String, String>,
+        wfs: &BTreeMap<&str, &str>,
+        seen: &mut BTreeSet<String>,
+    ) -> Result<String, String> {
+        let mut out = text.to_string();
+        for m in uses_re.captures_iter(text) {
+            let raw = m[1].split('@').next().unwrap_or("");
+            let key =
+                norm_local(raw).ok_or_else(|| format!("`uses: ./{raw}` leaves the repository"))?;
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let inner = actions
+                .get(&key)
+                .map(String::as_str)
+                .or_else(|| wfs.get(key.as_str()).copied())
+                .ok_or_else(|| {
+                    format!("`uses: ./{raw}` names no tracked action or workflow, so its linters cannot be found")
+                })?;
+            out.push('\n');
+            out.push_str(&expand(inner, uses_re, actions, wfs, seen)?);
+        }
+        Ok(out)
+    }
     let mut out = BTreeSet::new();
     for (path, text) in workflows {
         let wf = rivet_yaml::from_str::<Yaml>(text)
             .map_err(|e| format!("{path} is unparseable ({e}), so its linters cannot be found"))?;
         let jobs: BTreeMap<String, &Yaml> = entries(get(&wf, "jobs")).into_iter().collect();
         for (jid, job) in &jobs {
-            let runs_lint = list(get(job, "steps"))
-                .into_iter()
-                .any(|st| lint.is_match(&step_text(st)));
-            if !runs_lint {
+            let mut own = String::new();
+            flatten(job, &mut own);
+            // flatten drops keys' context: re-add each local `uses:` for expand
+            for u in get(job, "uses").into_iter().chain(
+                list(get(job, "steps"))
+                    .into_iter()
+                    .filter_map(|st| get(st, "uses")),
+            ) {
+                own.push_str(&format!("\nuses: {}\n", py_str(u)));
+            }
+            let full = expand(&own, &uses_re, actions, &wf_by_path, &mut BTreeSet::new())?;
+            if !lint.is_match(&full) {
                 continue;
+            }
+            // A gate inside the linter job (a step `if:` on its linter step,
+            // or `needs` read outside `needs:`/`if:`) cannot be mapped to a
+            // class: run everything.
+            for st in list(get(job, "steps")) {
+                let mut t = String::new();
+                flatten(st, &mut t);
+                if let Some(u) = get(st, "uses") {
+                    t.push_str(&format!("\nuses: {}\n", py_str(u)));
+                }
+                let t = expand(&t, &uses_re, actions, &wf_by_path, &mut BTreeSet::new())?;
+                if lint.is_match(&t)
+                    && get(st, "if")
+                        .is_some_and(|c| !unconditional_if(c) && step_if_reads_mutable(&py_str(c)))
+                {
+                    return Err(format!(
+                        "{path}: job {jid} gates a whole-repository linter step with an `if:` sieve cannot map to a class"
+                    ));
+                }
+            }
+            let mut body = String::new();
+            if let Yaml::Mapping(h) = job {
+                for (k, v) in h {
+                    if !key_is(k, "needs") && !key_is(k, "if") {
+                        flatten(v, &mut body);
+                    }
+                }
+            }
+            if needs_word.is_match(&body) {
+                return Err(format!(
+                    "{path}: job {jid} runs a whole-repository linter and reads `needs` outside its `if:`"
+                ));
             }
             // The linter job and every job it needs, transitively: a skipped
             // need skips it unless its own `if:` is always()/!cancelled().
@@ -1387,6 +1463,13 @@ pub fn leaf_scope_file(
             }
             if needs_re.is_match(&body) {
                 return Err(format!("{refusal} (and job {j} reads `needs`)"));
+            }
+            // A job that needs another can receive a gate out of band (an
+            // artifact or cache the other job wrote), which no text rule sees.
+            if !needs_of(job).is_empty() {
+                return Err(format!(
+                    "{refusal} (and job {j} needs another job, which can pass it a gate as an artifact)"
+                ));
             }
         }
     }

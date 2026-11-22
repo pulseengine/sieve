@@ -1074,3 +1074,62 @@ fn a_symlink_whose_target_names_a_service_file_keeps_it_run_all() {
     git(&d, &["commit", "-q", "-am", "edit"]);
     assert_eq!(classify_git(&d, &base)["run_all"], true);
 }
+
+// rivet: verifies REQ-035
+#[test]
+fn linter_detection_follows_local_reusable_workflows_and_fails_closed() {
+    let n = ".github/workflows/new.yml";
+    let added = |name: &str, files: Vec<(&str, String)>| {
+        edit_files(name, &files, &[(n, Some(plain("", "", PLAIN_JOB)))])
+    };
+    let gb = gate("b");
+    let caller = format!(
+        "name: ci2\non:\n  pull_request:\n  merge_group:\njobs:\n{CLASSIFIER}  lint:\n    needs: changes\n    if: {gb}\n    uses: ./.github/workflows/lint-lib.yml\n"
+    );
+    let lib = "name: lint-lib\non:\n  workflow_call:\njobs:\n  l:\n    runs-on: ubuntu-latest\n    steps:\n      - run: yamllint . && actionlint\n".to_string();
+    // e14/e15: the linter runs inside a local reusable workflow
+    let v = added(
+        "rv3-reusable",
+        vec![
+            (".github/workflows/ci2.yml", caller.clone()),
+            (".github/workflows/lint-lib.yml", lib),
+        ],
+    );
+    assert_scoped(&v, &["b"]);
+    // a local `uses:` that resolves to nothing tracked
+    let v = added(
+        "rv3-unresolved",
+        vec![(".github/workflows/ci2.yml", caller)],
+    );
+    assert_run_all(&v, "names no tracked action or workflow");
+    // a linter step behind its own step-level gate
+    let stepgated = lint_wf_steps(
+        "      - if: needs.changes.outputs.b != 'false'\n        run: actionlint\n",
+        None,
+        "",
+    );
+    let v = added(
+        "rv3-step-gated",
+        vec![(".github/workflows/lint.yml", stepgated)],
+    );
+    assert_run_all(&v, "cannot map to a class");
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_job_chain_in_a_file_without_a_classifier_keeps_file_wide_off() {
+    // e16: a gate passed as an artifact needs no `needs` text in the job body
+    let chain = |cmd: &str| {
+        format!("name: c\non:\n  pull_request:\n  merge_group:\njobs:\n  first:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make verdict\n  second:\n    needs: first\n    runs-on: ubuntu-latest\n    steps:\n      - run: {cmd}\n")
+    };
+    let p = ".github/workflows/c.yml";
+    let v = edit_files(
+        "rv3-chain",
+        &[(p, chain("make b"))],
+        &[(
+            p,
+            Some(chain("make b").replacen("jobs:\n", "env:\n  X: 1\njobs:\n", 1)),
+        )],
+    );
+    assert_run_all(&v, "needs another job");
+}
