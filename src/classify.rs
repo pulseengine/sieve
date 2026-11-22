@@ -153,7 +153,7 @@ fn leaf_scope(
     cfg: &Config,
     p: &str,
     revs: Option<Revs>,
-) -> Option<Result<BTreeMap<String, BTreeSet<String>>, String>> {
+) -> Option<Result<crate::workflows::LeafSelection, String>> {
     if !cfg.workflows.scope_leaf_edits {
         return None;
     }
@@ -181,11 +181,115 @@ fn leaf_scope(
                 )
             })
             .and_then(|pair| match pair {
-                (Some(b), Some(h)) => crate::workflows::leaf_scope(cfg, p, &b, &h),
-                (None, _) => Err(format!("{p} is added")),
                 (_, None) => Err(format!("{p} is deleted")),
+                (b, Some(h)) => other_workflows(repo, p).and_then(|others| {
+                    crate::workflows::leaf_scope_file(cfg, p, b.as_deref(), &h, &others)
+                }),
             }),
     )
+}
+
+/// sieve#27 B: `Some(note)` when `p` is a file GitHub's own services read
+/// (Dependabot, code owners, funding, issue and PR templates), scoping is on,
+/// the adopter does not list it in [run_all], and no other tracked file
+/// (markdown included, the sieve config excepted) names it (security review:
+/// scripts, configs and doc includes can read it). Such a change runs no
+/// job by itself. A file that cannot be read keeps it run-all (`None`).
+fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
+    if !cfg.workflows.scope_leaf_edits {
+        return None;
+    }
+    let needles = service_needles(p)?;
+    if run_all_except(cfg, p, Some(".github/"), None) {
+        return None;
+    }
+    // Any tracked file may read it (a script a workflow runs, a config, an
+    // mdBook include): scanned as raw bytes, case-insensitively. Skipped: the
+    // service files themselves and the sieve config (a class may claim the
+    // file by name). A file deleted in the worktree or a submodule directory
+    // is skipped, as in the docs rule; any other read error keeps it run-all.
+    for f in repo.tracked().ok()? {
+        if f == p || f == cfg.path || service_needles(&f).is_some() {
+            continue;
+        }
+        // A symlink is judged by its target path (which may name the file);
+        // only a real directory (a submodule's gitlink) is skipped.
+        let full = repo.path(&f);
+        let bytes = match std::fs::symlink_metadata(&full) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+            Ok(m) if m.file_type().is_symlink() => std::fs::read_link(&full)
+                .ok()?
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .into_bytes(),
+            Ok(m) if m.is_dir() => continue,
+            Ok(_) => std::fs::read(&full).ok()?.to_ascii_lowercase(),
+        };
+        if needles
+            .iter()
+            .any(|n| bytes.windows(n.len()).any(|w| w == n.as_bytes()))
+        {
+            return None;
+        }
+    }
+    Some(format!(
+        "{p}: read by GitHub's services and named by no other tracked file, so it runs no job"
+    ))
+}
+
+/// The names a file GitHub's services read goes by (lowercase), or `None`.
+fn service_needles(p: &str) -> Option<&'static [&'static str]> {
+    let lower = p.strip_prefix(".github/")?.to_ascii_lowercase();
+    Some(match lower.as_str() {
+        "dependabot.yml" | "dependabot.yaml" => &["dependabot.yml", "dependabot.yaml"],
+        "codeowners" => &["codeowners"],
+        "funding.yml" | "funding.yaml" => &["funding.yml", "funding.yaml"],
+        "pull_request_template.md" => &["pull_request_template"],
+        _ if lower.starts_with("issue_template/") => &["issue_template"],
+        _ if lower.starts_with("pull_request_template/") => &["pull_request_template"],
+        _ => return None,
+    })
+}
+
+/// Security review of sieve#27: a scoped .github/ edit also selects the
+/// classes of gated jobs that lint the whole repository (actionlint, yamllint,
+/// ...), since those read every workflow and service file. A workflow that
+/// cannot be read fails the scoping.
+fn select_linters(repo: &Repo, v: &mut Verdict) -> Result<(), String> {
+    let all = other_workflows(repo, "")?;
+    // local composite actions, keyed by directory, for `uses: ./path`
+    let mut actions = BTreeMap::new();
+    for f in repo.tracked()? {
+        let b = basename(&f);
+        if b == "action.yml" || b == "action.yaml" {
+            let text = repo.read(&f).map_err(|e| format!("{f} unreadable: {e}"))?;
+            actions.insert(dirname(&f).to_string(), text);
+        }
+    }
+    for c in crate::workflows::linter_classes(&all, &actions)? {
+        if let Some(sel) = v.classes.get_mut(&c) {
+            *sel = true;
+        }
+    }
+    Ok(())
+}
+
+/// The tracked workflow files other than `p` (path, text), for the
+/// `workflow_run` check of sieve#27 A. One that cannot be read fails the scoping.
+fn other_workflows(repo: &Repo, p: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for f in repo.tracked()? {
+        let Some(name) = f.strip_prefix(".github/workflows/") else {
+            continue;
+        };
+        if f == p || name.contains('/') || !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+            continue;
+        }
+        let text = repo.read(&f).map_err(|e| format!("{f} unreadable: {e}"))?;
+        out.push((f, text));
+    }
+    Ok(out)
 }
 
 /// REQ-027: `None` when `p` is not a nested `Cargo.lock` (the root one, or a
@@ -417,8 +521,25 @@ pub fn classify_revs(
                 }
                 continue;
             }
+            // sieve#27 B: a GitHub-service file no workflow or action names.
+            if let Some(note) = service_file(repo, cfg, p) {
+                v.notes.push(note);
+                if let Err(why) = select_linters(repo, &mut v) {
+                    run_all.get_or_insert_with(|| format!("run-all path: {p}: {why}"));
+                }
+                for (c, _) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
+                    v.classes.insert(c.clone(), true);
+                }
+                continue;
+            }
             match leaf_scope(repo, cfg, p, revs) {
-                Some(Ok(sel)) => {
+                Some(Ok((sel, note))) => {
+                    if let Some(n) = note {
+                        v.notes.push(format!("leaf workflow {p}: {n}"));
+                    }
+                    if let Err(why) = select_linters(repo, &mut v) {
+                        run_all.get_or_insert_with(|| format!("run-all path: {p}: {why}"));
+                    }
                     for (c, jobs) in sel {
                         v.explain.entry(c.clone()).or_default().push(
                             serde_json::json!({"path": p, "claim": "leaf workflow", "via": jobs}),

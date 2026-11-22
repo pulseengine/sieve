@@ -176,3 +176,26 @@ fn release_signs_what_it_publishes() {
         "release.yml overwrites published assets"
     );
 }
+
+// rivet: verifies REQ-017
+#[test]
+fn release_notes_heredoc_runs_no_command_substitution() {
+    // The notes heredoc is unquoted (it expands ${VERSION}), so a bare
+    // backtick runs its text as a command: v0.3.0 and v0.4.0 published
+    // "yields  for that class" after `false` ran and printed nothing.
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/release.yml"),
+    )
+    .unwrap();
+    let start = text.find("cat > \"$notes\" <<EOF").expect("notes heredoc");
+    let body = &text[start..];
+    let body = &body[..body.find("\n          EOF\n").expect("heredoc end")];
+    let bare: Vec<&str> = body
+        .lines()
+        .filter(|l| l.replace("\\`", "").contains('`') || l.contains("$("))
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "unescaped command substitution in the notes heredoc: {bare:?}"
+    );
+}

@@ -1192,6 +1192,315 @@ fn step_if_reads_mutable(cond: &str) -> bool {
         .is_match(cond)
 }
 
+/// Security review of sieve#27: the classes read by classifier-gated jobs
+/// that run a whole-repository linter (actionlint, yamllint, zizmor,
+/// pre-commit, ...) in any of `workflows` (path, text). Such a job reads every
+/// file under .github/, so a scoped .github/ edit selects its classes too. A
+/// linter called from a script is not seen; its class must claim .github/.
+pub fn linter_classes(
+    workflows: &[(String, String)],
+    actions: &BTreeMap<String, String>,
+) -> Result<BTreeSet<String>, String> {
+    let lint = Regex::new(
+        r"(?i)\b(actionlint|yamllint|yaml-lint|zizmor|pre-commit|prek|super-linter|megalinter|mega-linter|checkov|prettier|typos|codespell|reuse|markdownlint|markdownlint-cli2|lychee|check-jsonschema|editorconfig-checker|biome|dprint|taplo)\b",
+    )
+    .unwrap();
+    let needs_word = Regex::new(r"(?i)\bneeds\b").unwrap();
+    let wf_by_path: BTreeMap<&str, &str> = workflows
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    // A local `uses:` path, normalized (`.` and `..` folded); `None` above the root.
+    fn norm_local(p: &str) -> Option<String> {
+        let mut parts: Vec<&str> = Vec::new();
+        for c in p.split('/') {
+            match c {
+                "" | "." => {}
+                ".." => {
+                    parts.pop()?;
+                }
+                c => parts.push(c),
+            }
+        }
+        Some(parts.join("/"))
+    }
+    // Every `uses:` value anywhere below `y` (as parsed YAML, so a quoted
+    // key or a folded scalar is seen).
+    fn collect_uses(y: &Yaml, out: &mut Vec<String>) {
+        match y {
+            Yaml::Mapping(h) => {
+                for (k, v) in h {
+                    if key_is(k, "uses") {
+                        out.push(py_str(v).trim().to_string());
+                    }
+                    collect_uses(v, out);
+                }
+            }
+            Yaml::Sequence(a) => a.iter().for_each(|v| collect_uses(v, out)),
+            _ => {}
+        }
+    }
+    // The text of every local action or reusable workflow `seeds` name,
+    // recursively; a local path that resolves to no tracked file, or an
+    // unparseable one, fails. A cycle is followed once (`seen`).
+    fn expand(
+        seeds: Vec<String>,
+        actions: &BTreeMap<String, String>,
+        wfs: &BTreeMap<&str, &str>,
+        seen: &mut BTreeSet<String>,
+    ) -> Result<String, String> {
+        let mut out = String::new();
+        for u in seeds {
+            let Some(raw) = u.strip_prefix("./") else {
+                continue;
+            };
+            let raw = raw.split('@').next().unwrap_or("");
+            let key =
+                norm_local(raw).ok_or_else(|| format!("`uses: ./{raw}` leaves the repository"))?;
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let inner = actions
+                .get(&key)
+                .map(String::as_str)
+                .or_else(|| wfs.get(key.as_str()).copied())
+                .ok_or_else(|| {
+                    format!("`uses: ./{raw}` names no tracked action or workflow, so its linters cannot be found")
+                })?;
+            let y = rivet_yaml::from_str::<Yaml>(inner)
+                .map_err(|e| format!("`uses: ./{raw}` is unparseable ({e})"))?;
+            let mut nested = Vec::new();
+            collect_uses(&y, &mut nested);
+            out.push('\n');
+            out.push_str(inner);
+            out.push_str(&expand(nested, actions, wfs, seen)?);
+        }
+        Ok(out)
+    }
+    let mut out = BTreeSet::new();
+    for (path, text) in workflows {
+        let wf = rivet_yaml::from_str::<Yaml>(text)
+            .map_err(|e| format!("{path} is unparseable ({e}), so its linters cannot be found"))?;
+        let jobs: BTreeMap<String, &Yaml> = entries(get(&wf, "jobs")).into_iter().collect();
+        for (jid, job) in &jobs {
+            let mut own = String::new();
+            flatten(job, &mut own);
+            let mut seeds = Vec::new();
+            collect_uses(job, &mut seeds);
+            let full = own + &expand(seeds, actions, &wf_by_path, &mut BTreeSet::new())?;
+            if !lint.is_match(&full) {
+                continue;
+            }
+            // A gate inside the linter job (a step `if:` on its linter step,
+            // or `needs` read outside `needs:`/`if:`) cannot be mapped to a
+            // class: run everything.
+            for st in list(get(job, "steps")) {
+                let mut t = String::new();
+                flatten(st, &mut t);
+                let mut seeds = Vec::new();
+                collect_uses(st, &mut seeds);
+                let t = t + &expand(seeds, actions, &wf_by_path, &mut BTreeSet::new())?;
+                if lint.is_match(&t)
+                    && get(st, "if")
+                        .is_some_and(|c| !unconditional_if(c) && step_if_reads_mutable(&py_str(c)))
+                {
+                    return Err(format!(
+                        "{path}: job {jid} gates a whole-repository linter step with an `if:` sieve cannot map to a class"
+                    ));
+                }
+            }
+            let mut body = String::new();
+            if let Yaml::Mapping(h) = job {
+                for (k, v) in h {
+                    if !key_is(k, "needs") && !key_is(k, "if") {
+                        flatten(v, &mut body);
+                    }
+                }
+            }
+            if needs_word.is_match(&body) {
+                return Err(format!(
+                    "{path}: job {jid} runs a whole-repository linter and reads `needs` outside its `if:`"
+                ));
+            }
+            // The linter job and every job it needs, transitively: a skipped
+            // need skips it unless its own `if:` is always()/!cancelled().
+            let mut stack = vec![jid.clone()];
+            let mut seen = BTreeSet::new();
+            while let Some(j) = stack.pop() {
+                if !seen.insert(j.clone()) {
+                    continue;
+                }
+                let Some(job) = jobs.get(&j) else { continue };
+                match get(job, "if") {
+                    None => {}
+                    Some(c) if unconditional_if(c) => {}
+                    Some(Yaml::String(c)) => match parse_gate_if(c) {
+                        Ok((_, outs)) => out.extend(outs),
+                        Err(_) => {
+                            return Err(format!(
+                                "{path}: job {j} gates a whole-repository linter with an `if:` that is not the classifier form"
+                            ))
+                        }
+                    },
+                    Some(_) => {
+                        return Err(format!(
+                            "{path}: job {j} gates a whole-repository linter with a non-string `if:`"
+                        ))
+                    }
+                }
+                let keeps_running = get(job, "if").is_some_and(unconditional_if);
+                if keeps_running {
+                    continue; // its needs cannot skip it
+                }
+                stack.extend(needs_of(job));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The selection of a leaf-workflow edit, and a note when it came from the
+/// file-wide rule (sieve#27 A) rather than from the changed jobs.
+pub type LeafSelection = (BTreeMap<String, BTreeSet<String>>, Option<String>);
+
+/// sieve#27 A: REQ-030 per-job scoping, with a file-wide fallback. `base` is
+/// `None` for an added file; `others` are the repository's other workflow
+/// files (path, text).
+///
+/// Everything runs, before any scoping, when either version of the file uses a
+/// merge key, has no `on:`, is reusable (`workflow_call`), is triggered by
+/// `workflow_run`, or another workflow's `workflow_run` names it.
+///
+/// When per-job scoping refuses (or the file is added), a file whose two
+/// versions host no job running `sieve classify` and call no reusable
+/// workflow selects nothing: none of its jobs can be gated by a classifier
+/// (`needs:` stays inside a file), so every one of them runs anyway, and a
+/// workflow file reaches another only through `workflow_call`, `workflow_run`
+/// or a classifier. A file that hosts a classifier or calls a reusable
+/// workflow keeps the refusal: everything runs.
+pub fn leaf_scope_file(
+    cfg: &Config,
+    file: &str,
+    base: Option<&str>,
+    head: &str,
+    others: &[(String, String)],
+) -> Result<LeafSelection, String> {
+    let parse = |t: &str, which: &str| -> Result<Yaml, String> {
+        match rivet_yaml::from_str::<Yaml>(t) {
+            Ok(y @ Yaml::Mapping(_)) => Ok(y),
+            Ok(_) => Err(format!("{file} at {which} is not a mapping")),
+            Err(e) => Err(format!("{file} at {which} is unparseable ({e})")),
+        }
+    };
+    let h = parse(head, "head")?;
+    let b = base.map(|t| parse(t, "the merge base")).transpose()?;
+    let versions: Vec<&Yaml> = std::iter::once(&h).chain(b.as_ref()).collect();
+    let mut names: BTreeSet<String> = [file.to_string(), basename(file).to_string()].into();
+    for y in &versions {
+        if has_merge_key(y) {
+            return Err(format!("{file} uses a YAML merge key (`<<:`)"));
+        }
+        let triggers: Vec<String> = match on_of(y) {
+            Some(Yaml::Mapping(m)) => m.iter().map(|(k, _)| py_str(k)).collect(),
+            Some(other) => members(other),
+            None => return Err(format!("{file} has no `on:`")),
+        };
+        if triggers.iter().any(|t| t == "workflow_call") {
+            return Err(format!(
+                "{file} is a reusable workflow (`on: workflow_call`)"
+            ));
+        }
+        if triggers.iter().any(|t| t == "workflow_run") {
+            return Err(format!("{file} is triggered by `workflow_run`"));
+        }
+        if let Some(n) = get_nn(y, "name") {
+            names.insert(py_str(n));
+        }
+    }
+    for (path, text) in others {
+        let Ok(o) = rivet_yaml::from_str::<Yaml>(text) else {
+            return Err(format!(
+                "{path} is unparseable, so a `workflow_run` naming {file} cannot be ruled out"
+            ));
+        };
+        if let Some(wr) = on_of(&o).and_then(|on| get(on, "workflow_run")) {
+            let listed = get_nn(wr, "workflows").map(members).unwrap_or_default();
+            if listed.is_empty() || listed.iter().any(|w| names.contains(w)) {
+                return Err(format!("{path} runs on `workflow_run` of {file}"));
+            }
+        }
+    }
+    let refusal = match base {
+        Some(bt) => match leaf_scope(cfg, file, bt, head) {
+            Ok(sel) => return Ok((sel, None)),
+            Err(why) => why,
+        },
+        None => format!("{file} is added"),
+    };
+    let needs_re = Regex::new(r"(?i)\bneeds\b").unwrap();
+    for y in &versions {
+        if !classifier_jobs(y).is_empty() {
+            return Err(format!("{refusal} (and the file hosts a classifier job)"));
+        }
+        if let Some((j, _)) = entries(get(y, "jobs"))
+            .into_iter()
+            .find(|(_, job)| has(job, "uses"))
+        {
+            return Err(format!("{refusal} (and job {j} calls a reusable workflow)"));
+        }
+        // Security review: a classifier sieve does not recognise (a wrapper
+        // script, an action) still gates jobs. Its outputs reach a job only
+        // through `needs`, read in `if:`, `env:`, `with:`, `strategy:` or a
+        // step. So the file-wide rule does not apply when any job has an
+        // `if:` beyond always()/!cancelled(), any step `if:` reads a context
+        // other than github or runner, or any job reads `needs` anywhere
+        // (its `needs:` list aside).
+        for (j, job) in entries(get(y, "jobs")) {
+            if get(job, "if").is_some_and(|c| !unconditional_if(c)) {
+                return Err(format!(
+                    "{refusal} (and job {j} has an `if:`, which may gate it)"
+                ));
+            }
+            if list(get(job, "steps"))
+                .into_iter()
+                .any(|st| get(st, "if").is_some_and(|c| step_if_reads_mutable(&py_str(c))))
+            {
+                return Err(format!(
+                    "{refusal} (and job {j} has a step `if:` reading a context other than github or runner)"
+                ));
+            }
+            let mut body = String::new();
+            if let Yaml::Mapping(h) = job {
+                for (k, v) in h {
+                    if !key_is(k, "needs") {
+                        flatten(v, &mut body);
+                    }
+                }
+            }
+            if needs_re.is_match(&body) {
+                return Err(format!("{refusal} (and job {j} reads `needs`)"));
+            }
+            // A job that needs another can receive a gate out of band (an
+            // artifact or cache the other job wrote), which no text rule sees.
+            if !needs_of(job).is_empty() {
+                return Err(format!(
+                    "{refusal} (and job {j} needs another job, which can pass it a gate as an artifact)"
+                ));
+            }
+        }
+    }
+    Ok((
+        BTreeMap::new(),
+        Some(format!(
+            "{refusal}; file-wide: the file hosts no classifier and calls no reusable workflow, so its jobs run anyway and no class is selected"
+        )),
+    ))
+}
+
+fn basename(p: &str) -> &str {
+    p.rsplit('/').next().unwrap_or(p)
+}
+
 /// REQ-030: the classes a modification of the leaf workflow `file` selects,
 /// as class -> the jobs that select it, given its text at the merge base and
 /// at head. `Err` says why the change still selects everything.
@@ -1322,6 +1631,7 @@ pub fn leaf_scope(
         }
         affected.extend(grown);
     }
+    let needs_word = Regex::new(r"(?i)\bneeds\b").unwrap();
     for j in &affected {
         if cls.contains_key(j) {
             return Err(format!("{file}: classifier job {j} needs a changed job"));
@@ -1343,6 +1653,22 @@ pub fn leaf_scope(
                     "{file}: job {j} has a step gated on a context other than github or runner"
                 ));
             }
+        }
+        // Security review of sieve#27: a job that reads `needs` outside its
+        // `if:` and `needs:` (env, with, a run script) can skip its own work
+        // on a classifier output, e.g. `[ "$A" = false ] && exit 0`.
+        let mut body = String::new();
+        if let Yaml::Mapping(h) = hmap[j] {
+            for (k, v) in h {
+                if !key_is(k, "needs") && !key_is(k, "if") {
+                    flatten(v, &mut body);
+                }
+            }
+        }
+        if needs_word.is_match(&body) {
+            return Err(format!(
+                "{file}: job {j} reads `needs` outside its `if:`, so its work may depend on a classifier output"
+            ));
         }
     }
     // A skipped need skips the job that needs it.

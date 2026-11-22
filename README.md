@@ -125,6 +125,9 @@ selects everything when:
 - a step with `continue-on-error` changed;
 - an affected job has a step `if:` reading any context but `github` or
   `runner`, or a `strategy` computed from an expression;
+- an affected job reads `needs` outside its `if:` and `needs:` (in `env:`,
+  `with:` or a `run:` script, which could skip its own work on a classifier
+  output);
 - a job in the closure has any `if:` other than the exact classifier form or
   `always()`/`!cancelled()`;
 - the file uses a YAML merge key;
@@ -133,7 +136,44 @@ selects everything when:
 
 `--paths` has no base version, so there `.github/` still selects everything.
 Composite actions, reusable workflows and everything else under `.github/`
-also always select everything.
+also always select everything, with two exceptions (v0.4.1, sieve#27):
+
+- **A file with no classifier (REQ-035).** When the edit above would select
+  everything, but neither version of the file hosts a job running
+  `sieve classify`, calls a reusable workflow, has a job `if:` other than
+  `always()`/`!cancelled()`, has a step `if:` reading any context but `github`
+  or `runner`, has a job that reads `needs` outside its `needs:` list, or has
+  a job that needs another (which could pass it a gate as an artifact), it
+  selects no class instead: `needs:` stays inside a file, so none of its jobs can be
+  gated, and they all run anyway. The `if:` condition covers a classifier sieve
+  does not recognise (a wrapper script, an action). Everything still runs when
+  either version uses a merge key, has no `on:`, is reusable or triggered by
+  `workflow_run`, when another workflow runs on `workflow_run` of it, and when
+  the file is deleted.
+- **Files GitHub's services read (REQ-036).** `.github/dependabot.yml`,
+  `CODEOWNERS`, `FUNDING.yml`, `PULL_REQUEST_TEMPLATE.md` and files under
+  `ISSUE_TEMPLATE/` or `PULL_REQUEST_TEMPLATE/` select only the classes that
+  claim them, unless `[run_all]` lists them or any other tracked file (a
+  workflow, an action, a script, a doc include; the sieve config excepted)
+  contains their name.
+
+Every scoped `.github/` edit (REQ-030, REQ-035, REQ-036) also selects the
+classes gating jobs that lint the whole repository, and every job those
+need: a step whose `run:` or `uses:` (a local composite action included)
+names actionlint, yamllint, zizmor, pre-commit, prek, super-linter,
+megalinter, checkov, prettier, typos, codespell, reuse, markdownlint, lychee,
+check-jsonschema, editorconfig-checker, biome, dprint or taplo. Local
+composite actions and local reusable workflows are inlined, recursively; a
+local `uses:` that resolves to no tracked file, a linter job gated by an
+`if:` that is not the classifier form, or a linter step behind its own
+step-level gate makes the edit run everything. Remote actions and remote
+reusable workflows are not inlined. Only those names are detected: any other check that reads
+`.github/` (a script, a `make` target, another tool) needs its class to claim
+`.github/` (`hand = [".github/"]`) when scoping is on.
+
+Scoping reads gates from the workflow text. A job that receives a gate out
+of band (it downloads an artifact the classifier wrote and exits early on it)
+is not seen by REQ-030; such a job must carry the classifier `if:` itself.
 
 Scoping decides only what this pull request runs. It does not re-check that an
 edited job's gate still covers what the job now builds: an edit that makes a
