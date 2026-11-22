@@ -191,9 +191,9 @@ fn leaf_scope(
 
 /// sieve#27 B: `Some(note)` when `p` is a file GitHub's own services read
 /// (Dependabot, code owners, funding, issue and PR templates), scoping is on,
-/// the adopter does not list it in [run_all], and no other tracked
-/// non-markdown file names it (security review: a script a workflow runs can
-/// read it, so the scan is not limited to `.github/`). Such a change runs no
+/// the adopter does not list it in [run_all], and no other tracked file
+/// (markdown included, the sieve config excepted) names it (security review:
+/// scripts, configs and doc includes can read it). Such a change runs no
 /// job by itself. A file that cannot be read keeps it run-all (`None`).
 fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
     if !cfg.workflows.scope_leaf_edits {
@@ -203,14 +203,21 @@ fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
     if run_all_except(cfg, p, Some(".github/"), None) {
         return None;
     }
-    // Any tracked non-markdown file may read it (a script a workflow runs, a
-    // config): scanned as raw bytes, case-insensitively. The service files
-    // themselves are skipped. A file that cannot be read keeps it run-all.
+    // Any tracked file may read it (a script a workflow runs, a config, an
+    // mdBook include): scanned as raw bytes, case-insensitively. Skipped: the
+    // service files themselves and the sieve config (a class may claim the
+    // file by name). A file deleted in the worktree or a submodule directory
+    // is skipped, as in the docs rule; any other read error keeps it run-all.
     for f in repo.tracked().ok()? {
-        if f == p || f.to_ascii_lowercase().ends_with(".md") || service_needles(&f).is_some() {
+        if f == p || f == cfg.path || service_needles(&f).is_some() {
             continue;
         }
-        let bytes = std::fs::read(repo.path(&f)).ok()?.to_ascii_lowercase();
+        let bytes = match std::fs::read(repo.path(&f)) {
+            Ok(b) => b.to_ascii_lowercase(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) if repo.path(&f).is_dir() => continue,
+            Err(_) => return None,
+        };
         if needles
             .iter()
             .any(|n| bytes.windows(n.len()).any(|w| w == n.as_bytes()))
@@ -219,7 +226,7 @@ fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
         }
     }
     Some(format!(
-        "{p}: read by GitHub's services and named by no tracked non-markdown file, so it runs no job"
+        "{p}: read by GitHub's services and named by no other tracked file, so it runs no job"
     ))
 }
 
@@ -235,6 +242,20 @@ fn service_needles(p: &str) -> Option<&'static [&'static str]> {
         _ if lower.starts_with("pull_request_template/") => &["pull_request_template"],
         _ => return None,
     })
+}
+
+/// Security review of sieve#27: a scoped .github/ edit also selects the
+/// classes of gated jobs that lint the whole repository (actionlint, yamllint,
+/// ...), since those read every workflow and service file. A workflow that
+/// cannot be read fails the scoping.
+fn select_linters(repo: &Repo, v: &mut Verdict) -> Result<(), String> {
+    let all = other_workflows(repo, "")?;
+    for c in crate::workflows::linter_classes(&all) {
+        if let Some(sel) = v.classes.get_mut(&c) {
+            *sel = true;
+        }
+    }
+    Ok(())
 }
 
 /// The tracked workflow files other than `p` (path, text), for the
@@ -486,6 +507,9 @@ pub fn classify_revs(
             // sieve#27 B: a GitHub-service file no workflow or action names.
             if let Some(note) = service_file(repo, cfg, p) {
                 v.notes.push(note);
+                if let Err(why) = select_linters(repo, &mut v) {
+                    run_all.get_or_insert_with(|| format!("run-all path: {p}: {why}"));
+                }
                 for (c, _) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
                     v.classes.insert(c.clone(), true);
                 }
@@ -495,6 +519,9 @@ pub fn classify_revs(
                 Some(Ok((sel, note))) => {
                     if let Some(n) = note {
                         v.notes.push(format!("leaf workflow {p}: {n}"));
+                    }
+                    if let Err(why) = select_linters(repo, &mut v) {
+                        run_all.get_or_insert_with(|| format!("run-all path: {p}: {why}"));
                     }
                     for (c, jobs) in sel {
                         v.explain.entry(c.clone()).or_default().push(

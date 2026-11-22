@@ -833,14 +833,113 @@ fn a_github_service_file_a_script_outside_github_reads_stays_run_all() {
         &[(p, Some("* @b\n".into()))],
     );
     assert_run_all(&v, "is CI, toolchain");
-    // a markdown file naming it does not count (docs rule)
+    // a markdown file naming it counts too: an mdBook include reads it
     let v = edit_files(
         "svc-named-by-markdown",
         &[
-            ("README.md", "see .github/CODEOWNERS\n".into()),
+            (
+                "book/src/contributing.md",
+                "{{#include ../../.github/CODEOWNERS}}\n".into(),
+            ),
             (p, "* @a\n".into()),
         ],
         &[(p, Some("* @b\n".into()))],
     );
+    assert_run_all(&v, "is CI, toolchain");
+}
+
+// ── security review of sieve#27 ────────────────────────────────────────────
+
+/// lint.yml: a classifier and a job gated on class b that lints the repo.
+fn lint_wf() -> String {
+    format!(
+        "name: lint\non:\n  pull_request:\n  merge_group:\njobs:\n{CLASSIFIER}  lint:\n    needs: changes\n    if: {g}\n    runs-on: ubuntu-latest\n    steps:\n      - run: yamllint . && actionlint\n",
+        g = gate("b")
+    )
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_classifier_sieve_does_not_recognise_keeps_file_wide_off() {
+    // the classifier runs through a wrapper script; ja is still gated on it
+    let wf = |cmd: &str| {
+        format!(
+            "name: w\non:\n  pull_request:\n  merge_group:\njobs:\n  changes:\n    runs-on: ubuntu-latest\n    outputs:\n      a: ${{{{ steps.c.outputs.a }}}}\n    steps:\n      - id: c\n        run: ./ci/classify.sh --config sieve.toml\n  ja:\n    needs: changes\n    if: {g}\n    runs-on: ubuntu-latest\n    steps:\n      - run: {cmd}\n",
+            g = gate("a")
+        )
+    };
+    let p = ".github/workflows/w.yml";
+    let v = edit_files(
+        "rv-wrapper-classifier",
+        &[(p, wf("make a"))],
+        &[(p, Some(wf("make a-broken")))],
+    );
+    assert_run_all(&v, "may gate it");
+}
+
+// rivet: verifies REQ-035
+// rivet: verifies REQ-036
+#[test]
+fn a_scoped_github_edit_selects_the_whole_repo_linters_class() {
+    let lint = (".github/workflows/lint.yml", lint_wf());
+    // B: an invalid dependabot.yml must still be linted
+    let p = ".github/dependabot.yml";
+    let v = edit_files(
+        "rv-lint-service",
+        &[lint.clone(), (p, "x: 1\n".into())],
+        &[(p, Some("x: [\n".into()))],
+    );
+    assert_scoped(&v, &["b"]);
+    // A: an added workflow with no classifier
+    let n = ".github/workflows/new.yml";
+    let v = edit_files(
+        "rv-lint-added",
+        std::slice::from_ref(&lint),
+        &[(n, Some(plain("", "", PLAIN_JOB)))],
+    );
+    assert_scoped(&v, &["b"]);
+    // REQ-030: a step edit in ci.yml's a-gated job
+    let v = edit_files(
+        "rv-lint-step",
+        &[lint, (".github/workflows/ci.yml", ci())],
+        &[(
+            ".github/workflows/ci.yml",
+            Some(ci().replacen("make a", "make a2", 1)),
+        )],
+    );
+    assert_scoped(&v, &["a", "b"]);
+}
+
+// rivet: verifies REQ-036
+#[test]
+fn a_service_file_claimed_by_name_selects_its_class_and_a_submodule_does_not_block() {
+    let p = ".github/dependabot.yml";
+    // a class claims it by name in sieve.toml, which does not count as a namer
+    let cfg = "[class.a]\nhand = [\"a/\"]\n[class.b]\nhand = [\"b/\", \".github/dependabot.yml\"]\n[workflows]\nscope_leaf_edits = true\n";
+    let (d, base) = history(
+        "rv-claimed",
+        cfg,
+        &[(p, "x: 1\n".into())],
+        &[(p, Some("x: 2\n".into()))],
+    );
+    assert_scoped(&classify_git(&d, &base), &["b"]);
+    // a submodule (a gitlink whose directory is empty) is skipped by the scan
+    let (d, _) = history("rv-submodule", CFG_ON, &[(p, "x: 1\n".into())], &[]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    git(
+        &d,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},vendor/sub"),
+        ],
+    );
+    fs::create_dir_all(d.join("vendor/sub")).unwrap();
+    git(&d, &["commit", "-q", "-m", "submodule"]);
+    let base = git(&d, &["rev-parse", "HEAD"]);
+    fs::write(d.join(p), "x: 2\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "edit"]);
+    let v = classify_git(&d, &base);
     assert_scoped(&v, &[]);
 }

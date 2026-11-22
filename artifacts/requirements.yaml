@@ -652,19 +652,24 @@ artifacts:
     description: >
       With scope_leaf_edits, a modified or added file directly under
       .github/workflows/ that REQ-030 cannot pin to single jobs selects no
-      class when neither version hosts a job running sieve classify or calls a
-      reusable workflow: needs: stays inside a file, so none of its jobs can be
+      class when neither version hosts a job running sieve classify, calls a
+      reusable workflow, has a job if: other than always()/!cancelled(), or a
+      step if: reading needs (a classifier sieve does not recognise still gates
+      through if:): needs: stays inside a file, so none of its jobs can be
       classifier-gated and every one of them runs anyway. Everything still runs
       when either version uses a merge key, has no on:, is reusable
       (workflow_call) or triggered by workflow_run; when another workflow runs
       on workflow_run of it (by name or path, or with no workflows list); when
       the file is deleted; and when it hosts a classifier or calls a reusable
-      workflow. Each of those has its own planted control. Owner approved
+      workflow. Each of those has its own planted control. Every scoped .github/
+      edit also selects the classes of gated jobs whose steps run a
+      whole-repository linter (actionlint, yamllint, zizmor, pre-commit, ...);
+      a linter run from a script is not seen, so its class claims .github/. Owner approved
       2026-11-22 (relayed by pulseengine.eu), with that condition (sieve#27 A).
     fields:
       priority: should
       category: functional
-      review: author-verified only (tests/leaf_scope.rs; 3 rule mutants killed); no independent review yet
+      review: author-verified only (tests/leaf_scope.rs; 3 rule mutants killed); fresh-context security review 2026-11-22 found 2 false skips, fixed with controls
     links:
       - {type: constraint-satisfies, target: SC-006}
       - {type: derives-from, target: REQ-030}
@@ -680,8 +685,9 @@ artifacts:
       FUNDING.yml, PULL_REQUEST_TEMPLATE.md and files under ISSUE_TEMPLATE/ or
       PULL_REQUEST_TEMPLATE/ select only the classes that claim them, instead
       of everything, unless the adopter lists them in [run_all] or any other
-      tracked non-markdown file contains their name (case-insensitive, raw
-      bytes; a name built at run time is not seen, the same limit
+      tracked file (markdown included, the sieve config excepted; a submodule
+      directory or a file deleted in the worktree is skipped) contains their
+      name (case-insensitive, raw bytes; a name built at run time is not seen, the same limit
       as the docs rule). Owner approved 2026-11-22, relayed (sieve#27 B).
     fields:
       priority: could

@@ -137,16 +137,27 @@ also always select everything, with two exceptions (v0.4.1, sieve#27):
 
 - **A file with no classifier (REQ-035).** When the edit above would select
   everything, but neither version of the file hosts a job running
-  `sieve classify` or calls a reusable workflow, it selects no class instead:
-  `needs:` stays inside a file, so none of its jobs can be gated, and they all
-  run anyway. Everything still runs when either version uses a merge key, has
-  no `on:`, is reusable or triggered by `workflow_run`, when another workflow
-  runs on `workflow_run` of it, and when the file is deleted.
+  `sieve classify`, calls a reusable workflow, has a job `if:` other than
+  `always()`/`!cancelled()`, or has a step `if:` reading `needs`, it selects no
+  class instead: `needs:` stays inside a file, so none of its jobs can be
+  gated, and they all run anyway. The `if:` condition covers a classifier sieve
+  does not recognise (a wrapper script, an action). Everything still runs when
+  either version uses a merge key, has no `on:`, is reusable or triggered by
+  `workflow_run`, when another workflow runs on `workflow_run` of it, and when
+  the file is deleted.
 - **Files GitHub's services read (REQ-036).** `.github/dependabot.yml`,
   `CODEOWNERS`, `FUNDING.yml`, `PULL_REQUEST_TEMPLATE.md` and files under
   `ISSUE_TEMPLATE/` or `PULL_REQUEST_TEMPLATE/` select only the classes that
-  claim them, unless `[run_all]` lists them or any other tracked non-markdown
-  file (a workflow, an action, a script they run) contains their name.
+  claim them, unless `[run_all]` lists them or any other tracked file (a
+  workflow, an action, a script, a doc include; the sieve config excepted)
+  contains their name.
+
+Every scoped `.github/` edit (REQ-030, REQ-035, REQ-036) also selects the
+classes of gated jobs that lint the whole repository: a step whose `run:` or
+`uses:` names actionlint, yamllint, zizmor, pre-commit, prek, super-linter,
+megalinter, checkov or prettier. A linter that a script or `make` target runs
+is not seen: give its class a `.github/` claim (`hand = [".github/"]`) when
+scoping is on.
 
 Scoping decides only what this pull request runs. It does not re-check that an
 edited job's gate still covers what the job now builds: an edit that makes a

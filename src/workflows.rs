@@ -1192,20 +1192,40 @@ fn step_if_reads_mutable(cond: &str) -> bool {
         .is_match(cond)
 }
 
-/// REQ-030: the classes a modification of the leaf workflow `file` selects,
-/// as class -> the jobs that select it, given its text at the merge base and
-/// at head. `Err` says why the change still selects everything.
-///
-/// Scoped only when the edit cannot change what is skipped: everything
-/// outside `jobs:` is unchanged (triggers, env, permissions, concurrency,
-/// defaults), the workflow is not reusable, no job is removed, every
-/// job that runs `sieve classify` is unchanged, and no changed job changes a
-/// gating key or a step's `if:`/`continue-on-error:`. The changed and added jobs, every
-/// job that needs one (transitively), and every job those need must each be
-/// ungated, `always()`/`!cancelled()`, or carry the exact classifier `if:`
-/// wired to a classifier job in this file; the outputs they read are the
-/// selected classes. A job among the changed ones or their dependents whose
-/// steps are gated on job or step outputs selects everything.
+/// Security review of sieve#27: the classes read by classifier-gated jobs
+/// that run a whole-repository linter (actionlint, yamllint, zizmor,
+/// pre-commit, ...) in any of `workflows` (path, text). Such a job reads every
+/// file under .github/, so a scoped .github/ edit selects its classes too. A
+/// linter called from a script is not seen; its class must claim .github/.
+pub fn linter_classes(workflows: &[(String, String)]) -> BTreeSet<String> {
+    let lint = Regex::new(
+        r"(?i)\b(actionlint|yamllint|yaml-lint|zizmor|pre-commit|prek|super-linter|megalinter|mega-linter|checkov|prettier)\b",
+    )
+    .unwrap();
+    let mut out = BTreeSet::new();
+    for (_, text) in workflows {
+        let Ok(wf) = rivet_yaml::from_str::<Yaml>(text) else {
+            continue;
+        };
+        for (_, job) in entries(get(&wf, "jobs")) {
+            let runs_lint = list(get(job, "steps")).into_iter().any(|st| {
+                ["run", "uses"]
+                    .iter()
+                    .any(|k| get(st, k).is_some_and(|v| lint.is_match(&py_str(v))))
+            });
+            if !runs_lint {
+                continue;
+            }
+            if let Some(Yaml::String(c)) = get(job, "if") {
+                if let Ok((_, outs)) = parse_gate_if(c) {
+                    out.extend(outs);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The selection of a leaf-workflow edit, and a note when it came from the
 /// file-wide rule (sieve#27 A) rather than from the changed jobs.
 pub type LeafSelection = (BTreeMap<String, BTreeSet<String>>, Option<String>);
@@ -1284,6 +1304,7 @@ pub fn leaf_scope_file(
         },
         None => format!("{file} is added"),
     };
+    let needs_re = Regex::new(r"(?i)\bneeds\b").unwrap();
     for y in &versions {
         if !classifier_jobs(y).is_empty() {
             return Err(format!("{refusal} (and the file hosts a classifier job)"));
@@ -1293,6 +1314,25 @@ pub fn leaf_scope_file(
             .find(|(_, job)| has(job, "uses"))
         {
             return Err(format!("{refusal} (and job {j} calls a reusable workflow)"));
+        }
+        // Security review: a classifier sieve does not recognise (a wrapper
+        // script, an action) still gates jobs through `if:`. Any job `if:`
+        // beyond always()/!cancelled(), or a step `if:` reading `needs`, may be
+        // such a gate, so the file-wide rule does not apply.
+        for (j, job) in entries(get(y, "jobs")) {
+            if get(job, "if").is_some_and(|c| !unconditional_if(c)) {
+                return Err(format!(
+                    "{refusal} (and job {j} has an `if:`, which may gate it)"
+                ));
+            }
+            if list(get(job, "steps"))
+                .into_iter()
+                .any(|st| get(st, "if").is_some_and(|c| needs_re.is_match(&py_str(c))))
+            {
+                return Err(format!(
+                    "{refusal} (and job {j} has a step `if:` reading `needs`)"
+                ));
+            }
         }
     }
     Ok((
@@ -1307,6 +1347,20 @@ fn basename(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
 }
 
+/// REQ-030: the classes a modification of the leaf workflow `file` selects,
+/// as class -> the jobs that select it, given its text at the merge base and
+/// at head. `Err` says why the change still selects everything.
+///
+/// Scoped only when the edit cannot change what is skipped: everything
+/// outside `jobs:` is unchanged (triggers, env, permissions, concurrency,
+/// defaults), the workflow is not reusable, no job is removed, every
+/// job that runs `sieve classify` is unchanged, and no changed job changes a
+/// gating key or a step's `if:`/`continue-on-error:`. The changed and added jobs, every
+/// job that needs one (transitively), and every job those need must each be
+/// ungated, `always()`/`!cancelled()`, or carry the exact classifier `if:`
+/// wired to a classifier job in this file; the outputs they read are the
+/// selected classes. A job among the changed ones or their dependents whose
+/// steps are gated on job or step outputs selects everything.
 pub fn leaf_scope(
     cfg: &Config,
     file: &str,
