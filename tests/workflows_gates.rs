@@ -269,6 +269,20 @@ fn gate_a_a_workflow_that_may_not_report_is_caught() {
             "paths-filter",
         ),
         (
+            "push-paths",
+            w(format!("on:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n    paths: ['src/**']\n{mg}")),
+            ONE,
+            "a",
+            "paths-filter",
+        ),
+        (
+            "push-paths-ignore",
+            w(format!("on:\n  pull_request:\n  push:\n    paths-ignore: ['docs/**']\n{mg}")),
+            ONE,
+            "a",
+            "paths-filter",
+        ),
+        (
             "no-pr",
             w(format!("on:\n  push:\n    branches: [main]\n{mg}")),
             ONE,
@@ -620,6 +634,36 @@ fn gate_b_the_classifier_step_must_run_exactly_sieve_classify() {
             ONE, "b", "classifier-wiring",
         ),
         (
+            "record-into-github-output",
+            run(&format!("{RUN} --record \"$GITHUB_OUTPUT\"")),
+            ONE, "b", "classifier-wiring",
+        ),
+        (
+            "record-into-github-env",
+            run(&format!("{RUN} --record $GITHUB_ENV")),
+            ONE, "b", "classifier-wiring",
+        ),
+        (
+            "record-absolute-path",
+            run(&format!("{RUN} --record /tmp/v.json")),
+            ONE, "b", "classifier-wiring",
+        ),
+        (
+            "record-dotdot",
+            run(&format!("{RUN} --record \"$RUNNER_TEMP/../v.json\"")),
+            ONE, "b", "classifier-wiring",
+        ),
+        (
+            "record-twice",
+            run(&format!("{RUN} --record a.json --record b.json")),
+            ONE, "b", "classifier-wiring",
+        ),
+        (
+            "record-without-a-value",
+            run(&format!("{RUN} --record")),
+            ONE, "b", "classifier-wiring",
+        ),
+        (
             "run-without-a-base",
             run("sieve classify --config sieve.toml --event \"$EVENT_NAME\" --format github-output"),
             ONE, "b", "classifier-wiring",
@@ -703,6 +747,26 @@ fn the_accepted_forms_pass() {
                 run: "./target/release/sieve classify --format github-output --event \"${EVENT_NAME}\" --base \"${BASE_SHA}\" --config ./sieve.toml".into(),
                 ..W::base()
             },
+            false,
+        ),
+        (
+            "record-in-runner-temp",
+            W { run: format!("{RUN} --record \"$RUNNER_TEMP/sieve-verdict.json\""), ..W::base() },
+            false,
+        ),
+        (
+            "record-braced-runner-temp-first",
+            W { run: "sieve classify --record ${RUNNER_TEMP}/v.json --config sieve.toml --base \"$BASE_SHA\" --event \"$EVENT_NAME\" --format github-output".into(), ..W::base() },
+            false,
+        ),
+        (
+            "record-relative-path",
+            W { run: format!("{RUN} --record out/sieve-verdict.json"), ..W::base() },
+            false,
+        ),
+        (
+            "push-without-paths",
+            W { trigger: "on:\n  pull_request:\n  push:\n    branches: [main]\n  merge_group:\n".into(), ..W::base() },
             false,
         ),
         (

@@ -82,23 +82,27 @@ fn run_old(
     }
     let text = std::fs::read_to_string(out_file)
         .map_err(|e| format!("{} wrote no GITHUB_OUTPUT: {e}", o.old))?;
-    let mut m = BTreeMap::new();
+    Ok(old_selection(&text, &o.map))
+}
+
+/// Class selection from the old detector's GITHUB_OUTPUT. Several old outputs
+/// mapped to one class select it if any of them is true (sieve#25: it was
+/// last-wins, so the class's verdict depended on the output order).
+fn old_selection(text: &str, map: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, bool> {
+    let mut m: BTreeMap<String, bool> = BTreeMap::new();
     for line in text.lines() {
         if let Some((k, v)) = line.split_once('=') {
             let sel = v.trim() == "true";
-            match o.map.get(k.trim()) {
-                Some(classes) => {
-                    for c in classes {
-                        m.insert(c.clone(), sel);
-                    }
-                }
-                None => {
-                    m.insert(k.trim().to_string(), sel);
-                }
+            let targets = match map.get(k.trim()) {
+                Some(classes) => classes.clone(),
+                None => vec![k.trim().to_string()],
+            };
+            for c in targets {
+                *m.entry(c).or_insert(false) |= sel;
             }
         }
     }
-    Ok(m)
+    m
 }
 
 pub fn cmd(o: &Opts, root: PathBuf, cfg: &Config) -> ExitCode {

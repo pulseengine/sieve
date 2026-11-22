@@ -35,6 +35,7 @@ USAGE:
   sieve classify --config <sieve.toml> [--root <dir>]
                  (--base <sha> [--head <sha>] | --paths-file <file> | --paths <p>...)
                  [--event <name>] [--format json|github-output] [--explain]
+                 [--record <file>]
   sieve graph --config <sieve.toml> [--root <dir>] [--format json]
   sieve check-graph --config <sieve.toml> [--root <dir>] [--control <name>]...
                     [--depinfo <class>=<file.d>]... [--format json|text]
@@ -59,6 +60,8 @@ config error. Every failure selects everything; nothing selects nothing.
   --format github-output appends <class>=true|false and run_all=... to
   $GITHUB_OUTPUT (stdout if unset). Wire jobs with
     !cancelled() && (needs.C.result != 'success' || needs.C.outputs.<o> != 'false')
+  --record <file>: also write the JSON verdict (explain included) to <file>,
+  before any output; if it cannot be written, nothing is written and exit 2.
 check-graph: exit 0 pass, 1 a control failed, 2 usage, 3 refused.
   controls: graph-inputs, cargo-metadata, true-inputs, no-job, inert-overlap,
             fail-open, bazel-srcs, bazel-snapshot, depinfo
@@ -104,6 +107,7 @@ struct Args {
     workflows: Option<String>,
     required: Option<String>,
     explain: bool,
+    record: Option<String>,
     old: Option<String>,
     old_args: Vec<String>,
     refspec: Option<String>,
@@ -133,6 +137,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         workflows: None,
         required: None,
         explain: false,
+        record: None,
         old: None,
         old_args: vec![],
         refspec: None,
@@ -156,6 +161,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--control" => a.controls.push(val("--control")?),
             "--depinfo" => a.depinfo.push(val("--depinfo")?),
             "--explain" => a.explain = true,
+            "--record" => a.record = Some(val("--record")?),
             "--old" => a.old = Some(val("--old")?),
             "--old-arg" => a.old_args.push(val("--old-arg")?),
             "--ref" => a.refspec = Some(val("--ref")?),
@@ -423,7 +429,7 @@ fn cmd_classify(a: &Args, root: PathBuf, cfg: &Config) -> ExitCode {
             Verdict::all(cfg, format!("internal: classifier crashed: {msg}"))
         }
     };
-    emit(&v, format, a.explain)
+    emit(&v, format, a.explain, a.record.as_deref())
 }
 
 /// Escape a string for a log line, so a path cannot start or end a GitHub
@@ -434,7 +440,7 @@ fn esc(s: &str) -> String {
         .replace('\n', "%0A")
 }
 
-fn emit(v: &Verdict, format: &str, explain: bool) -> ExitCode {
+fn emit(v: &Verdict, format: &str, explain: bool, record: Option<&str>) -> ExitCode {
     let reason = esc(v.reason.as_deref().unwrap_or_default());
     eprintln!(
         "sieve: {}",
@@ -477,6 +483,15 @@ fn emit(v: &Verdict, format: &str, explain: bool) -> ExitCode {
             reason.replace('\n', " ")
         )
     });
+    // sieve#25: the JSON verdict (explain included) goes to --record before
+    // any output is written. If it cannot be written, no output is written
+    // either: the consumer's `!= 'false'` runs everything, and the job goes red.
+    if let Some(f) = record {
+        if let Err(e) = write_record(f, &verdict_json(v, true)) {
+            eprintln!("sieve: --record {}: {e}", esc(f));
+            return ExitCode::from(2);
+        }
+    }
     if format == "github-output" {
         let mut lines = vec![format!("run_all={}", v.run_all)];
         lines.extend(v.classes.iter().map(|(c, b)| format!("{c}={b}")));
@@ -509,21 +524,70 @@ fn emit(v: &Verdict, format: &str, explain: bool) -> ExitCode {
         if let Some(w) = &warning {
             eprintln!("{w}");
         }
-        let mut out = json!({
-            "schema": CLASSIFY_SCHEMA,
-            "run_all": v.run_all,
-            "reason": v.reason,
-            "classes": v.classes,
-            "unknown_paths": v.unknown_paths,
-            "inputs_hash": v.inputs_hash,
-            "unresolved": v.unresolved,
-        });
-        if explain {
-            out["explain"] = json!(v.explain);
-        }
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&verdict_json(v, explain)).unwrap()
+        );
     }
     ExitCode::SUCCESS
+}
+
+/// The `sieve.classify.v1` verdict document.
+fn verdict_json(v: &Verdict, explain: bool) -> serde_json::Value {
+    let mut out = json!({
+        "schema": CLASSIFY_SCHEMA,
+        "run_all": v.run_all,
+        "reason": v.reason,
+        "classes": v.classes,
+        "unknown_paths": v.unknown_paths,
+        "inputs_hash": v.inputs_hash,
+        "unresolved": v.unresolved,
+    });
+    if explain {
+        out["explain"] = json!(v.explain);
+    }
+    out
+}
+
+/// The runner's command files: a verdict written into one would be read back
+/// as outputs, environment, PATH entries or state.
+const RUNNER_FILES: [&str; 5] = [
+    "GITHUB_OUTPUT",
+    "GITHUB_ENV",
+    "GITHUB_PATH",
+    "GITHUB_STATE",
+    "GITHUB_STEP_SUMMARY",
+];
+
+/// Write the --record file (created or truncated), refusing a runner command file.
+fn write_record(path: &str, doc: &serde_json::Value) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("empty path".into());
+    }
+    // Resolved even when the file does not exist yet: its directory, canonical, plus its name.
+    let canon = |p: &str| {
+        let p = std::path::Path::new(p);
+        std::fs::canonicalize(p).ok().or_else(|| {
+            let dir = match p.parent() {
+                Some(d) if !d.as_os_str().is_empty() => d,
+                _ => std::path::Path::new("."),
+            };
+            Some(std::fs::canonicalize(dir).ok()?.join(p.file_name()?))
+        })
+    };
+    for name in RUNNER_FILES {
+        if let Some(rf) = std::env::var(name).ok().filter(|s| !s.is_empty()) {
+            let same =
+                rf == path || matches!((canon(&rf), canon(path)), (Some(a), Some(b)) if a == b);
+            if same {
+                return Err(format!(
+                    "is ${name}; the verdict must not go into a runner command file"
+                ));
+            }
+        }
+    }
+    let body = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())? + "\n";
+    std::fs::write(path, body).map_err(|e| e.to_string())
 }
 
 fn cmd_graph(a: &Args, root: PathBuf, cfg: &Config) -> ExitCode {

@@ -17,6 +17,7 @@ sieve classify --config sieve.toml --paths-file changed.txt          # no git ca
 sieve graph --config sieve.toml                                      # sieve.graph.v1
 sieve check-graph --config sieve.toml                                # controls on the real tree
 sieve classify --config sieve.toml --paths src/x.rs --explain        # why each class was selected
+sieve classify ... --format github-output --record "$RUNNER_TEMP/verdict.json"  # outputs + JSON verdict, one call
 sieve --version                                                      # names the JSON schemas
 ```
 
@@ -36,7 +37,12 @@ if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.ou
 ```
 
 Never put a workflow-level `paths:` filter on a workflow that hosts a required
-check.
+check, on any trigger (`check-workflows` gate (a) refuses `push: paths:` too).
+
+To keep the verdict for `sieve observe`, add `--record "$RUNNER_TEMP/verdict.json"`
+to the one classify step and upload that file. A second classify step fails
+gate (b). The record is written before the outputs; if it cannot be written,
+no output is written and classify exits 2, so every gated job runs.
 
 ## What runs everything
 

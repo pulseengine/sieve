@@ -345,3 +345,21 @@ fn inert_paths_do_not_block_a_prefix_acceptance_but_cannot_satisfy_it_alone() {
         "inert-only must not be accepted: {v}"
     );
 }
+
+// rivet: verifies REQ-013
+#[test]
+fn several_old_outputs_mapped_to_one_class_are_a_union_not_last_wins() {
+    let d = history("map-union");
+    let c = cfg(&d);
+    // a1 selects, a2 (written last) does not: the old detector selected a.
+    let old = script(
+        &d,
+        "union.sh",
+        "printf 'a1=true\\na2=false\\nb=false\\n' >> \"$GITHUB_OUTPUT\"",
+    );
+    let (code, v) = run(&d, &c, &old, &["--map", "a1=a", "--map", "a2=a"]);
+    // Union: a is selected on every commit, so b/y and README.md are narrower
+    // for a. Last-wins would read a=false and report no narrowing (exit 0).
+    assert_eq!(code, Some(1), "{v}");
+    assert_eq!(v["narrower"].as_array().unwrap().len(), 2, "{v}");
+}
