@@ -272,10 +272,13 @@ against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
   (no `paths:`/`paths-ignore:` key, even empty; no branch or `types:`
   restriction) and on `merge_group`;
 - (b) a required job is skipped only through the classifier: its `if:` is
-  absent or exactly the form above, wired to a real `sieve classify` step
+  absent, exactly `always()`/`!cancelled()`, or exactly the form above, wired to a real `sieve classify` step
   with no env override, no step-level `if:` on outputs, no unobserved
   `continue-on-error`, no skip inherited through `needs:`. The
   `[workflows.job_outputs]` map (job to classes) is HAND-MAINTAINED;
+  a required name built from `${{ matrix.<key> }}` is expanded per matrix
+  row (list keys and `include:`), and the map takes the job under its
+  base name (`Test` for `Test (${{ matrix.label }})`);
 - (c) the classifier selects everything on push, merge_group, no base, a bad
   base and an empty diff;
 - (d) cross-class builds (REQ-026): a gated job whose run step names a Cargo

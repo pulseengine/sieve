@@ -897,3 +897,95 @@ fn missing_inputs_are_refused_and_bad_usage_is_exit_2() {
     assert_eq!(o.code, Some(1), "{}", o.stdout);
     assert!(found(&o).contains(&("a".to_string(), "unparseable".to_string())));
 }
+
+// rivet: verifies REQ-014
+#[test]
+fn matrix_names_and_unconditional_ifs_are_accepted() {
+    let include = "    strategy:\n      fail-fast: false\n      matrix:\n        include:\n          - { label: linux, runner: ubuntu-24.04 }\n          - { label: macos, runner: macos-latest }\n          - { label: windows, runner: windows-latest }\n";
+    let lists =
+        "    strategy:\n      matrix:\n        os: [linux, macos]\n        rust: [stable, beta]\n";
+    let cases: Vec<(&str, W, &str)> = vec![
+        (
+            // sieve#30: relay's Test (${{ matrix.label }}) over include
+            "matrix-include-label",
+            W {
+                gate_name: "The Gate (${{ matrix.label }})".into(),
+                gate_extra: include.into(),
+                ..W::base()
+            },
+            "The Gate (linux)\nThe Gate (macos)\nThe Gate (windows)\n",
+        ),
+        (
+            "matrix-lists",
+            W {
+                gate_name: "The Gate (${{ matrix.os }}, ${{matrix.rust}})".into(),
+                gate_extra: lists.into(),
+                ..W::base()
+            },
+            "The Gate (linux, stable)\nThe Gate (linux, beta)\nThe Gate (macos, stable)\nThe Gate (macos, beta)\n",
+        ),
+        (
+            "if-always",
+            W {
+                gate_if: Some("always()".into()),
+                ..W::base()
+            },
+            ONE,
+        ),
+        (
+            "if-not-cancelled-wrapped",
+            W {
+                gate_if: Some("${{ !cancelled() }}".into()),
+                ..W::base()
+            },
+            ONE,
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, w, required) in cases {
+        let f = fixture(
+            &format!("pos30-{name}"),
+            &w.render(),
+            required,
+            &toml(false),
+            true,
+        );
+        let o = check_in(&f.root, &[]);
+        if o.code != Some(0) {
+            bad.push(format!("{name}: exit {:?}\n{}", o.code, o.stdout));
+        }
+    }
+    assert!(bad.is_empty(), "false positives:\n{}", bad.join("\n"));
+}
+
+// rivet: verifies REQ-014
+#[test]
+fn matrix_names_do_not_invent_contexts() {
+    let lists = "    strategy:\n      matrix:\n        os: [linux, macos]\n        rust: [stable, beta]\n        exclude:\n          - { os: macos, rust: beta }\n";
+    let bad = missed(vec![
+        (
+            // the excluded row is not produced
+            "matrix-excluded-row",
+            W {
+                gate_name: "The Gate (${{ matrix.os }}, ${{ matrix.rust }})".into(),
+                gate_extra: lists.into(),
+                ..W::base()
+            },
+            "The Gate (macos, beta)\n",
+            "a",
+            "unmapped",
+        ),
+        (
+            // a name with a non-matrix expression stays unexpanded
+            "name-with-other-expression",
+            W {
+                gate_name: "The Gate (${{ github.ref }})".into(),
+                ..W::base()
+            },
+            "The Gate (refs/heads/main)\n",
+            "a",
+            "unmapped",
+        ),
+    ]);
+    assert!(bad.is_empty(), "plants not caught:\n{}", bad.join("\n"));
+}
