@@ -1210,10 +1210,7 @@ pub fn linter_classes(
         .iter()
         .map(|(p, t)| (p.as_str(), t.as_str()))
         .collect();
-    // `text` with every local `uses: ./path` (a composite action or a
-    // reusable workflow) inlined, recursively; a local path that resolves to
-    // no tracked action or workflow fails, as does a cycle (seen once).
-    let uses_re = Regex::new(r##"(?m)\buses:\s*['"]?\./([^\s'"#]+)"##).unwrap();
+    // A local `uses:` path, normalized (`.` and `..` folded); `None` above the root.
     fn norm_local(p: &str) -> Option<String> {
         let mut parts: Vec<&str> = Vec::new();
         for c in p.split('/') {
@@ -1227,16 +1224,37 @@ pub fn linter_classes(
         }
         Some(parts.join("/"))
     }
+    // Every `uses:` value anywhere below `y` (as parsed YAML, so a quoted
+    // key or a folded scalar is seen).
+    fn collect_uses(y: &Yaml, out: &mut Vec<String>) {
+        match y {
+            Yaml::Mapping(h) => {
+                for (k, v) in h {
+                    if key_is(k, "uses") {
+                        out.push(py_str(v).trim().to_string());
+                    }
+                    collect_uses(v, out);
+                }
+            }
+            Yaml::Sequence(a) => a.iter().for_each(|v| collect_uses(v, out)),
+            _ => {}
+        }
+    }
+    // The text of every local action or reusable workflow `seeds` name,
+    // recursively; a local path that resolves to no tracked file, or an
+    // unparseable one, fails. A cycle is followed once (`seen`).
     fn expand(
-        text: &str,
-        uses_re: &Regex,
+        seeds: Vec<String>,
         actions: &BTreeMap<String, String>,
         wfs: &BTreeMap<&str, &str>,
         seen: &mut BTreeSet<String>,
     ) -> Result<String, String> {
-        let mut out = text.to_string();
-        for m in uses_re.captures_iter(text) {
-            let raw = m[1].split('@').next().unwrap_or("");
+        let mut out = String::new();
+        for u in seeds {
+            let Some(raw) = u.strip_prefix("./") else {
+                continue;
+            };
+            let raw = raw.split('@').next().unwrap_or("");
             let key =
                 norm_local(raw).ok_or_else(|| format!("`uses: ./{raw}` leaves the repository"))?;
             if !seen.insert(key.clone()) {
@@ -1249,8 +1267,13 @@ pub fn linter_classes(
                 .ok_or_else(|| {
                     format!("`uses: ./{raw}` names no tracked action or workflow, so its linters cannot be found")
                 })?;
+            let y = rivet_yaml::from_str::<Yaml>(inner)
+                .map_err(|e| format!("`uses: ./{raw}` is unparseable ({e})"))?;
+            let mut nested = Vec::new();
+            collect_uses(&y, &mut nested);
             out.push('\n');
-            out.push_str(&expand(inner, uses_re, actions, wfs, seen)?);
+            out.push_str(inner);
+            out.push_str(&expand(nested, actions, wfs, seen)?);
         }
         Ok(out)
     }
@@ -1262,15 +1285,9 @@ pub fn linter_classes(
         for (jid, job) in &jobs {
             let mut own = String::new();
             flatten(job, &mut own);
-            // flatten drops keys' context: re-add each local `uses:` for expand
-            for u in get(job, "uses").into_iter().chain(
-                list(get(job, "steps"))
-                    .into_iter()
-                    .filter_map(|st| get(st, "uses")),
-            ) {
-                own.push_str(&format!("\nuses: {}\n", py_str(u)));
-            }
-            let full = expand(&own, &uses_re, actions, &wf_by_path, &mut BTreeSet::new())?;
+            let mut seeds = Vec::new();
+            collect_uses(job, &mut seeds);
+            let full = own + &expand(seeds, actions, &wf_by_path, &mut BTreeSet::new())?;
             if !lint.is_match(&full) {
                 continue;
             }
@@ -1280,10 +1297,9 @@ pub fn linter_classes(
             for st in list(get(job, "steps")) {
                 let mut t = String::new();
                 flatten(st, &mut t);
-                if let Some(u) = get(st, "uses") {
-                    t.push_str(&format!("\nuses: {}\n", py_str(u)));
-                }
-                let t = expand(&t, &uses_re, actions, &wf_by_path, &mut BTreeSet::new())?;
+                let mut seeds = Vec::new();
+                collect_uses(st, &mut seeds);
+                let t = t + &expand(seeds, actions, &wf_by_path, &mut BTreeSet::new())?;
                 if lint.is_match(&t)
                     && get(st, "if")
                         .is_some_and(|c| !unconditional_if(c) && step_if_reads_mutable(&py_str(c)))

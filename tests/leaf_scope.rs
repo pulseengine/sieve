@@ -1133,3 +1133,43 @@ fn a_job_chain_in_a_file_without_a_classifier_keeps_file_wide_off() {
     );
     assert_run_all(&v, "needs another job");
 }
+
+// rivet: verifies REQ-035
+#[test]
+fn linter_detection_reads_uses_as_yaml_not_text() {
+    let n = ".github/workflows/new.yml";
+    let gb = gate("b");
+    let wf = |uses: &str| lint_wf_steps(&format!("      - uses: {uses}\n"), Some(&gb), "");
+    // i7: a nested call with a quoted key
+    let v = edit_files(
+        "rv4-quoted",
+        &[
+            (".github/workflows/lint.yml", wf("./.github/actions/outer")),
+            (
+                ".github/actions/outer/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - \"uses\": ./.github/actions/l\n".into(),
+            ),
+            (
+                ".github/actions/l/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: yamllint .\n      shell: bash\n"
+                    .into(),
+            ),
+        ],
+        &[(n, Some(plain("", "", PLAIN_JOB)))],
+    );
+    assert_scoped(&v, &["b"]);
+    // the repository-root action (`uses: ./`)
+    let v = edit_files(
+        "rv4-root-action",
+        &[
+            (".github/workflows/lint.yml", wf("./")),
+            (
+                "action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: actionlint\n      shell: bash\n"
+                    .into(),
+            ),
+        ],
+        &[(n, Some(plain("", "", PLAIN_JOB)))],
+    );
+    assert_scoped(&v, &["b"]);
+}
