@@ -178,3 +178,33 @@ FEAT-008..011 and REQ-022 move to v0.5.0, because their fleet criteria
 
 Open for v0.4.x: sieve#24 (drift wiring), sieve#27 A and B (wait for an owner
 decision), signing the WASI component with wsc v0.12.2 (sigil#395 is fixed).
+
+## v0.4.1 (prepared 2026-11-22)
+
+With `[workflows] scope_leaf_edits = true` (owner approved sieve#27 A and B,
+2026-11-22, relayed by pulseengine.eu):
+- REQ-035: an edit to a workflow file with no classifier, no reusable call,
+  no gating `if:`, no `needs` read and no job chain selects no class instead
+  of everything; reusable, workflow_run-linked, classifier-hosting, merge-key
+  and deleted files still run everything, each with its own control;
+- REQ-036: dependabot.yml, CODEOWNERS, FUNDING.yml and PR/issue templates
+  under .github/ select only their claiming classes unless any other tracked
+  file names them;
+- every scoped .github/ edit also selects the classes of gated whole-repo
+  linter jobs (local composite actions and reusable workflows inlined from
+  parsed YAML); REQ-030 refuses a job that reads `needs` outside `if:`.
+
+check-workflows (sieve#30, relay): required names built from
+`${{ matrix.<key> }}` expand per matrix row; a required job with `if:
+always()` or `!cancelled()` passes gate (b).
+
+release.yml: backticks in the notes heredoc no longer run as commands (the
+v0.3.0 and v0.4.0 notes lost words; v0.4.0's were corrected by hand).
+
+Evidence: the owner's condition for A and B was a security review. A
+fresh-context reviewer ran 5 rounds and the automated commit review ran on
+each push: 8 confirmed false skips, each fixed with a control that fails
+with the fix reverted; round 5 found none. Documented limits: remote
+actions and reusable workflows are not inlined; a linter run from a script
+needs a .github/ claim; REQ-030 does not see a gate passed as an artifact.
+`rivet release status v0.4.1`: cuttable.
