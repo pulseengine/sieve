@@ -644,6 +644,53 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-005}
 
+  - id: REQ-035
+    type: requirement
+    title: An unscopable edit to a workflow file without a classifier selects no class
+    status: implemented
+    release: v0.4.1
+    description: >
+      With scope_leaf_edits, a modified or added file directly under
+      .github/workflows/ that REQ-030 cannot pin to single jobs selects no
+      class when neither version hosts a job running sieve classify or calls a
+      reusable workflow: needs: stays inside a file, so none of its jobs can be
+      classifier-gated and every one of them runs anyway. Everything still runs
+      when either version uses a merge key, has no on:, is reusable
+      (workflow_call) or triggered by workflow_run; when another workflow runs
+      on workflow_run of it (by name or path, or with no workflows list); when
+      the file is deleted; and when it hosts a classifier or calls a reusable
+      workflow. Each of those has its own planted control. Owner approved
+      2026-11-22 (relayed by pulseengine.eu), with that condition (sieve#27 A).
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (tests/leaf_scope.rs; 3 rule mutants killed); no independent review yet
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+      - {type: derives-from, target: REQ-030}
+      - {type: derives-from, target: SSC-003}
+
+  - id: REQ-036
+    type: requirement
+    title: A file GitHub's own services read runs no job unless a workflow or action names it
+    status: implemented
+    release: v0.4.1
+    description: >
+      With scope_leaf_edits, .github/dependabot.yml (or .yaml), CODEOWNERS,
+      FUNDING.yml, PULL_REQUEST_TEMPLATE.md and files under ISSUE_TEMPLATE/ or
+      PULL_REQUEST_TEMPLATE/ select only the classes that claim them, instead
+      of everything, unless the adopter lists them in [run_all] or a tracked
+      file under .github/workflows/ or .github/actions/ contains their name
+      (case-insensitive; a name built at run time is not seen, the same limit
+      as the docs rule). Owner approved 2026-11-22, relayed (sieve#27 B).
+    fields:
+      priority: could
+      category: functional
+      review: author-verified only (tests/leaf_scope.rs; the named-check mutant is killed); no independent review yet
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+      - {type: derives-from, target: SSC-003}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
@@ -802,6 +849,8 @@ artifacts:
       - {type: satisfies, target: REQ-030}
       - {type: satisfies, target: REQ-025}
       - {type: satisfies, target: REQ-027}
+      - {type: satisfies, target: REQ-035}
+      - {type: satisfies, target: REQ-036}
 
   - id: FEAT-010
     type: feature

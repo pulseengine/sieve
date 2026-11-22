@@ -1206,6 +1206,107 @@ fn step_if_reads_mutable(cond: &str) -> bool {
 /// wired to a classifier job in this file; the outputs they read are the
 /// selected classes. A job among the changed ones or their dependents whose
 /// steps are gated on job or step outputs selects everything.
+/// The selection of a leaf-workflow edit, and a note when it came from the
+/// file-wide rule (sieve#27 A) rather than from the changed jobs.
+pub type LeafSelection = (BTreeMap<String, BTreeSet<String>>, Option<String>);
+
+/// sieve#27 A: REQ-030 per-job scoping, with a file-wide fallback. `base` is
+/// `None` for an added file; `others` are the repository's other workflow
+/// files (path, text).
+///
+/// Everything runs, before any scoping, when either version of the file uses a
+/// merge key, has no `on:`, is reusable (`workflow_call`), is triggered by
+/// `workflow_run`, or another workflow's `workflow_run` names it.
+///
+/// When per-job scoping refuses (or the file is added), a file whose two
+/// versions host no job running `sieve classify` and call no reusable
+/// workflow selects nothing: none of its jobs can be gated by a classifier
+/// (`needs:` stays inside a file), so every one of them runs anyway, and a
+/// workflow file reaches another only through `workflow_call`, `workflow_run`
+/// or a classifier. A file that hosts a classifier or calls a reusable
+/// workflow keeps the refusal: everything runs.
+pub fn leaf_scope_file(
+    cfg: &Config,
+    file: &str,
+    base: Option<&str>,
+    head: &str,
+    others: &[(String, String)],
+) -> Result<LeafSelection, String> {
+    let parse = |t: &str, which: &str| -> Result<Yaml, String> {
+        match rivet_yaml::from_str::<Yaml>(t) {
+            Ok(y @ Yaml::Mapping(_)) => Ok(y),
+            Ok(_) => Err(format!("{file} at {which} is not a mapping")),
+            Err(e) => Err(format!("{file} at {which} is unparseable ({e})")),
+        }
+    };
+    let h = parse(head, "head")?;
+    let b = base.map(|t| parse(t, "the merge base")).transpose()?;
+    let versions: Vec<&Yaml> = std::iter::once(&h).chain(b.as_ref()).collect();
+    let mut names: BTreeSet<String> = [file.to_string(), basename(file).to_string()].into();
+    for y in &versions {
+        if has_merge_key(y) {
+            return Err(format!("{file} uses a YAML merge key (`<<:`)"));
+        }
+        let triggers: Vec<String> = match on_of(y) {
+            Some(Yaml::Mapping(m)) => m.iter().map(|(k, _)| py_str(k)).collect(),
+            Some(other) => members(other),
+            None => return Err(format!("{file} has no `on:`")),
+        };
+        if triggers.iter().any(|t| t == "workflow_call") {
+            return Err(format!(
+                "{file} is a reusable workflow (`on: workflow_call`)"
+            ));
+        }
+        if triggers.iter().any(|t| t == "workflow_run") {
+            return Err(format!("{file} is triggered by `workflow_run`"));
+        }
+        if let Some(n) = get_nn(y, "name") {
+            names.insert(py_str(n));
+        }
+    }
+    for (path, text) in others {
+        let Ok(o) = rivet_yaml::from_str::<Yaml>(text) else {
+            return Err(format!(
+                "{path} is unparseable, so a `workflow_run` naming {file} cannot be ruled out"
+            ));
+        };
+        if let Some(wr) = on_of(&o).and_then(|on| get(on, "workflow_run")) {
+            let listed = get_nn(wr, "workflows").map(members).unwrap_or_default();
+            if listed.is_empty() || listed.iter().any(|w| names.contains(w)) {
+                return Err(format!("{path} runs on `workflow_run` of {file}"));
+            }
+        }
+    }
+    let refusal = match base {
+        Some(bt) => match leaf_scope(cfg, file, bt, head) {
+            Ok(sel) => return Ok((sel, None)),
+            Err(why) => why,
+        },
+        None => format!("{file} is added"),
+    };
+    for y in &versions {
+        if !classifier_jobs(y).is_empty() {
+            return Err(format!("{refusal} (and the file hosts a classifier job)"));
+        }
+        if let Some((j, _)) = entries(get(y, "jobs"))
+            .into_iter()
+            .find(|(_, job)| has(job, "uses"))
+        {
+            return Err(format!("{refusal} (and job {j} calls a reusable workflow)"));
+        }
+    }
+    Ok((
+        BTreeMap::new(),
+        Some(format!(
+            "{refusal}; file-wide: the file hosts no classifier and calls no reusable workflow, so its jobs run anyway and no class is selected"
+        )),
+    ))
+}
+
+fn basename(p: &str) -> &str {
+    p.rsplit('/').next().unwrap_or(p)
+}
+
 pub fn leaf_scope(
     cfg: &Config,
     file: &str,

@@ -586,3 +586,232 @@ fn a_checkout_without_the_workflow_blob_selects_everything_and_says_why() {
     let v = classify_git(&d, &base);
     assert_run_all(&v, "needs the history with blobs");
 }
+
+// ── sieve#27 A: file-wide selection for files without a classifier ─────────
+
+/// A workflow with no classifier and ungated jobs (`extra_on` adds triggers,
+/// `top` adds top-level keys, `job` replaces the job body).
+fn plain(extra_on: &str, top: &str, job: &str) -> String {
+    format!("name: plain\non:\n  pull_request:\n  merge_group:\n{extra_on}{top}jobs:\n{job}")
+}
+
+const PLAIN_JOB: &str = "  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make\n";
+
+fn edit_files(
+    name: &str,
+    before: &[(&str, String)],
+    after: &[(&str, Option<String>)],
+) -> serde_json::Value {
+    let (d, base) = history(name, CFG_ON, before, after);
+    classify_git(&d, &base)
+}
+
+fn assert_file_wide(v: &serde_json::Value, want: &[&str]) {
+    // without the file-wide rule each of these runs everything
+    assert_scoped(v, want);
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn an_unscopable_edit_to_a_file_without_a_classifier_selects_nothing() {
+    let p = ".github/workflows/plain.yml";
+    // outside `jobs:` (top-level env)
+    let v = edit_files(
+        "fw-env",
+        &[(p, plain("", "", PLAIN_JOB))],
+        &[(p, Some(plain("", "env:\n  X: 1\n", PLAIN_JOB)))],
+    );
+    assert_file_wide(&v, &[]);
+    // a step gated on another context, changed
+    let gated = |c: &str| {
+        format!("  build:\n    runs-on: ubuntu-latest\n    steps:\n      - id: s\n        run: make\n      - if: {c}\n        run: make more\n")
+    };
+    let v = edit_files(
+        "fw-step-if",
+        &[(p, plain("", "", &gated("steps.s.outcome == 'success'")))],
+        &[(p, Some(plain("", "", &gated("env.X == '1'"))))],
+    );
+    assert_file_wide(&v, &[]);
+    // an added file
+    let v = edit_files("fw-added", &[], &[(p, Some(plain("", "", PLAIN_JOB)))]);
+    assert_file_wide(&v, &[]);
+    // combined with a code path
+    let v = edit_files(
+        "fw-with-code",
+        &[(p, plain("", "", PLAIN_JOB))],
+        &[
+            (p, Some(plain("", "env:\n  X: 1\n", PLAIN_JOB))),
+            ("a/x", Some("2".into())),
+        ],
+    );
+    assert_file_wide(&v, &["a"]);
+}
+
+/// (name, files before, files after, expected reason)
+type Control<'a> = (
+    &'a str,
+    Vec<(&'a str, String)>,
+    Vec<(&'a str, Option<String>)>,
+    &'a str,
+);
+
+// rivet: verifies REQ-035
+#[test]
+fn file_wide_selection_keeps_every_cross_file_and_classifier_case_running_everything() {
+    let p = ".github/workflows/plain.yml";
+    let env_edit = |before: String, after: String| (vec![(p, before)], vec![(p, Some(after))]);
+    let cases: Vec<Control> = vec![
+        // the classifier's own file: an outside-jobs edit
+        {
+            let (b, a) = env_edit(ci(), ci().replacen("jobs:\n", "env:\n  X: 1\njobs:\n", 1));
+            ("fw-classifier-file", b, a, "hosts a classifier job")
+        },
+        // a reusable workflow
+        {
+            let (b, a) = env_edit(
+                plain("  workflow_call:\n", "", PLAIN_JOB),
+                plain("  workflow_call:\n", "env:\n  X: 1\n", PLAIN_JOB),
+            );
+            ("fw-reusable", b, a, "reusable workflow")
+        },
+        // triggered by workflow_run
+        {
+            let (b, a) = env_edit(
+                plain(
+                    "  workflow_run:\n    workflows: [ci]\n    types: [completed]\n",
+                    "",
+                    PLAIN_JOB,
+                ),
+                plain(
+                    "  workflow_run:\n    workflows: [ci]\n    types: [completed]\n",
+                    "env:\n  X: 1\n",
+                    PLAIN_JOB,
+                ),
+            );
+            ("fw-workflow-run", b, a, "triggered by `workflow_run`")
+        },
+        // another workflow runs on workflow_run of this one (by name)
+        {
+            let follower = "name: follow\non:\n  workflow_run:\n    workflows: [plain]\n    types: [completed]\njobs:\n  f:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make\n".to_string();
+            (
+                "fw-followed",
+                vec![
+                    (p, plain("", "", PLAIN_JOB)),
+                    (".github/workflows/follow.yml", follower),
+                ],
+                vec![(p, Some(plain("", "env:\n  X: 1\n", PLAIN_JOB)))],
+                "runs on `workflow_run` of",
+            )
+        },
+        // a merge key
+        {
+            let (b, a) = env_edit(
+                plain("", "", PLAIN_JOB),
+                plain("", "defaults: &d\n  run:\n    shell: bash\n", "  build:\n    <<: *d\n    runs-on: ubuntu-latest\n    steps:\n      - run: make\n"),
+            );
+            ("fw-merge-key", b, a, "merge key")
+        },
+        // deleted
+        (
+            "fw-deleted",
+            vec![(p, plain("", "", PLAIN_JOB))],
+            vec![(p, None)],
+            "is deleted",
+        ),
+        // a job that calls a reusable workflow
+        {
+            let caller = "  call:\n    uses: ./.github/workflows/lib.yml\n";
+            let (b, a) = env_edit(plain("", "", caller), plain("", "env:\n  X: 1\n", caller));
+            ("fw-caller", b, a, "calls a reusable workflow")
+        },
+        // an added file that hosts a classifier
+        (
+            "fw-added-classifier",
+            vec![],
+            vec![(p, Some(ci()))],
+            "hosts a classifier job",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, before, after, why) in cases {
+        let v = edit_files(name, &before, &after);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
+
+// ── sieve#27 B: files GitHub's services read ───────────────────────────────
+
+// rivet: verifies REQ-036
+#[test]
+fn a_github_service_file_no_workflow_names_runs_no_job() {
+    let wf = (".github/workflows/plain.yml", plain("", "", PLAIN_JOB));
+    for (name, p) in [
+        ("svc-dependabot", ".github/dependabot.yml"),
+        ("svc-codeowners", ".github/CODEOWNERS"),
+        ("svc-funding", ".github/FUNDING.yml"),
+        ("svc-issue-template", ".github/ISSUE_TEMPLATE/bug.md"),
+        ("svc-pr-template", ".github/PULL_REQUEST_TEMPLATE.md"),
+    ] {
+        let v = edit_files(
+            name,
+            &[wf.clone(), (p, "x: 1\n".into())],
+            &[(p, Some("x: 2\n".into()))],
+        );
+        assert_scoped(&v, &[]);
+    }
+}
+
+// rivet: verifies REQ-036
+#[test]
+fn a_github_service_file_stays_run_all_when_named_listed_or_scoping_is_off() {
+    let p = ".github/dependabot.yml";
+    // a workflow that lints dependabot.yml
+    let lint = plain("", "", "  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: yamllint .github/dependabot.yml\n");
+    let v = edit_files(
+        "svc-named",
+        &[(".github/workflows/lint.yml", lint), (p, "x: 1\n".into())],
+        &[(p, Some("x: 2\n".into()))],
+    );
+    assert_run_all(&v, "is CI, toolchain");
+    // an action that reads the issue templates
+    let v = edit_files(
+        "svc-named-by-action",
+        &[
+            (".github/actions/triage/action.yml", "runs:\n  using: composite\n  steps:\n    - run: ls .github/ISSUE_TEMPLATE\n      shell: bash\n".into()),
+            (".github/ISSUE_TEMPLATE/bug.md", "a\n".into()),
+        ],
+        &[(".github/ISSUE_TEMPLATE/bug.md", Some("b\n".into()))],
+    );
+    assert_run_all(&v, "is CI, toolchain");
+    // a .github file outside the list
+    let v = edit_files(
+        "svc-release-notes",
+        &[(".github/release-notes/v1.md", "a\n".into())],
+        &[(".github/release-notes/v1.md", Some("b\n".into()))],
+    );
+    assert_run_all(&v, "is CI, toolchain");
+    // the adopter lists it in [run_all]
+    let cfg = format!("{CFG_ON}[run_all]\nfiles = [\".github/dependabot.yml\"]\n");
+    let (d, base) = history(
+        "svc-listed",
+        &cfg,
+        &[(p, "x: 1\n".into())],
+        &[(p, Some("x: 2\n".into()))],
+    );
+    assert_eq!(classify_git(&d, &base)["run_all"], true);
+    // scoping off
+    let (d, base) = history(
+        "svc-off",
+        CFG_OFF,
+        &[(p, "x: 1\n".into())],
+        &[(p, Some("x: 2\n".into()))],
+    );
+    assert_eq!(classify_git(&d, &base)["run_all"], true);
+}

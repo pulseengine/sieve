@@ -133,7 +133,20 @@ selects everything when:
 
 `--paths` has no base version, so there `.github/` still selects everything.
 Composite actions, reusable workflows and everything else under `.github/`
-also always select everything.
+also always select everything, with two exceptions (v0.4.1, sieve#27):
+
+- **A file with no classifier (REQ-035).** When the edit above would select
+  everything, but neither version of the file hosts a job running
+  `sieve classify` or calls a reusable workflow, it selects no class instead:
+  `needs:` stays inside a file, so none of its jobs can be gated, and they all
+  run anyway. Everything still runs when either version uses a merge key, has
+  no `on:`, is reusable or triggered by `workflow_run`, when another workflow
+  runs on `workflow_run` of it, and when the file is deleted.
+- **Files GitHub's services read (REQ-036).** `.github/dependabot.yml`,
+  `CODEOWNERS`, `FUNDING.yml`, `PULL_REQUEST_TEMPLATE.md` and files under
+  `ISSUE_TEMPLATE/` or `PULL_REQUEST_TEMPLATE/` select only the classes that
+  claim them, unless `[run_all]` lists them or a tracked file under
+  `.github/workflows/` or `.github/actions/` contains their name.
 
 Scoping decides only what this pull request runs. It does not re-check that an
 edited job's gate still covers what the job now builds: an edit that makes a

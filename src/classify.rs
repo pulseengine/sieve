@@ -153,7 +153,7 @@ fn leaf_scope(
     cfg: &Config,
     p: &str,
     revs: Option<Revs>,
-) -> Option<Result<BTreeMap<String, BTreeSet<String>>, String>> {
+) -> Option<Result<crate::workflows::LeafSelection, String>> {
     if !cfg.workflows.scope_leaf_edits {
         return None;
     }
@@ -181,11 +181,67 @@ fn leaf_scope(
                 )
             })
             .and_then(|pair| match pair {
-                (Some(b), Some(h)) => crate::workflows::leaf_scope(cfg, p, &b, &h),
-                (None, _) => Err(format!("{p} is added")),
                 (_, None) => Err(format!("{p} is deleted")),
+                (b, Some(h)) => other_workflows(repo, p).and_then(|others| {
+                    crate::workflows::leaf_scope_file(cfg, p, b.as_deref(), &h, &others)
+                }),
             }),
     )
+}
+
+/// sieve#27 B: `Some(note)` when `p` is a file GitHub's own services read
+/// (Dependabot, code owners, funding, issue and PR templates), scoping is on,
+/// the adopter does not list it in [run_all], and no tracked file under
+/// `.github/workflows/` or `.github/actions/` names it. Such a change runs no
+/// job by itself. A file that cannot be read keeps it run-all (`None`).
+fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
+    if !cfg.workflows.scope_leaf_edits {
+        return None;
+    }
+    let rest = p.strip_prefix(".github/")?;
+    let lower = rest.to_ascii_lowercase();
+    // the names a workflow would use to read it, matched case-insensitively
+    let needles: &[&str] = match lower.as_str() {
+        "dependabot.yml" | "dependabot.yaml" => &["dependabot.yml", "dependabot.yaml"],
+        "codeowners" => &["codeowners"],
+        "funding.yml" | "funding.yaml" => &["funding.yml", "funding.yaml"],
+        "pull_request_template.md" => &["pull_request_template"],
+        _ if lower.starts_with("issue_template/") => &["issue_template"],
+        _ if lower.starts_with("pull_request_template/") => &["pull_request_template"],
+        _ => return None,
+    };
+    if run_all_except(cfg, p, Some(".github/"), None) {
+        return None;
+    }
+    for f in repo.tracked().ok()? {
+        if !(f.starts_with(".github/workflows/") || f.starts_with(".github/actions/")) {
+            continue;
+        }
+        let text = repo.read(&f).ok()?.to_ascii_lowercase();
+        if needles.iter().any(|n| text.contains(n)) {
+            return None;
+        }
+    }
+    Some(format!(
+        "{p}: read by GitHub's services and named by no workflow or action, so it runs no job"
+    ))
+}
+
+/// The tracked workflow files other than `p` (path, text), for the
+/// `workflow_run` check of sieve#27 A. One that cannot be read fails the scoping.
+fn other_workflows(repo: &Repo, p: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for f in repo.tracked()? {
+        let Some(name) = f.strip_prefix(".github/workflows/") else {
+            continue;
+        };
+        if f == p || name.contains('/') || !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+            continue;
+        }
+        let text = repo.read(&f).map_err(|e| format!("{f} unreadable: {e}"))?;
+        out.push((f, text));
+    }
+    Ok(out)
 }
 
 /// REQ-027: `None` when `p` is not a nested `Cargo.lock` (the root one, or a
@@ -417,8 +473,19 @@ pub fn classify_revs(
                 }
                 continue;
             }
+            // sieve#27 B: a GitHub-service file no workflow or action names.
+            if let Some(note) = service_file(repo, cfg, p) {
+                v.notes.push(note);
+                for (c, _) in g.iter().filter(|(_, cg)| cg.claims_path(p)) {
+                    v.classes.insert(c.clone(), true);
+                }
+                continue;
+            }
             match leaf_scope(repo, cfg, p, revs) {
-                Some(Ok(sel)) => {
+                Some(Ok((sel, note))) => {
+                    if let Some(n) = note {
+                        v.notes.push(format!("leaf workflow {p}: {n}"));
+                    }
                     for (c, jobs) in sel {
                         v.explain.entry(c.clone()).or_default().push(
                             serde_json::json!({"path": p, "claim": "leaf workflow", "via": jobs}),
