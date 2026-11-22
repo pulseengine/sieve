@@ -208,3 +208,18 @@ with the fix reverted; round 5 found none. Documented limits: remote
 actions and reusable workflows are not inlined; a linter run from a script
 needs a .github/ claim; REQ-030 does not see a gate passed as an artifact.
 `rivet release status v0.4.1`: cuttable.
+
+## v0.4.2 (prepared 2026-11-22)
+
+Two check fixes found by relay on its v0.4.1 pilot (#34):
+- check-graph graph-inputs counts a class's `.github/` claim under
+  `scope_leaf_edits` (the claim the v0.4.1 README asks for when a script
+  reads .github/); without scoping it is still reported as claiming nothing;
+- check-workflows gate (b): an `always()`/`!cancelled()` job that needs a
+  non-required job passes when a step reads that need's result
+  (`needs.<x>.result`, `needs['x'].result`, `toJSON(needs)`) and fails
+  `needs-result-unread` otherwise, instead of the `needs-not-required`
+  message, which was wrong for that form.
+
+No change to classify. Evidence: a control for each, failing with the change
+reverted; fmt, clippy and the full suite on the PR head and on main.
