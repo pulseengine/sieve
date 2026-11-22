@@ -815,3 +815,32 @@ fn a_github_service_file_stays_run_all_when_named_listed_or_scoping_is_off() {
     );
     assert_eq!(classify_git(&d, &base)["run_all"], true);
 }
+
+// rivet: verifies REQ-036
+#[test]
+fn a_github_service_file_a_script_outside_github_reads_stays_run_all() {
+    // security review: a workflow can run a script that reads CODEOWNERS
+    let p = ".github/CODEOWNERS";
+    let v = edit_files(
+        "svc-named-by-script",
+        &[
+            (
+                "scripts/owners.sh",
+                "grep -q team .github/CODEOWNERS\n".into(),
+            ),
+            (p, "* @a\n".into()),
+        ],
+        &[(p, Some("* @b\n".into()))],
+    );
+    assert_run_all(&v, "is CI, toolchain");
+    // a markdown file naming it does not count (docs rule)
+    let v = edit_files(
+        "svc-named-by-markdown",
+        &[
+            ("README.md", "see .github/CODEOWNERS\n".into()),
+            (p, "* @a\n".into()),
+        ],
+        &[(p, Some("* @b\n".into()))],
+    );
+    assert_scoped(&v, &[]);
+}

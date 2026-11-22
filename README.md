@@ -145,8 +145,8 @@ also always select everything, with two exceptions (v0.4.1, sieve#27):
 - **Files GitHub's services read (REQ-036).** `.github/dependabot.yml`,
   `CODEOWNERS`, `FUNDING.yml`, `PULL_REQUEST_TEMPLATE.md` and files under
   `ISSUE_TEMPLATE/` or `PULL_REQUEST_TEMPLATE/` select only the classes that
-  claim them, unless `[run_all]` lists them or a tracked file under
-  `.github/workflows/` or `.github/actions/` contains their name.
+  claim them, unless `[run_all]` lists them or any other tracked non-markdown
+  file (a workflow, an action, a script they run) contains their name.
 
 Scoping decides only what this pull request runs. It does not re-check that an
 edited job's gate still covers what the job now builds: an edit that makes a

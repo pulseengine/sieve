@@ -191,17 +191,42 @@ fn leaf_scope(
 
 /// sieve#27 B: `Some(note)` when `p` is a file GitHub's own services read
 /// (Dependabot, code owners, funding, issue and PR templates), scoping is on,
-/// the adopter does not list it in [run_all], and no tracked file under
-/// `.github/workflows/` or `.github/actions/` names it. Such a change runs no
+/// the adopter does not list it in [run_all], and no other tracked
+/// non-markdown file names it (security review: a script a workflow runs can
+/// read it, so the scan is not limited to `.github/`). Such a change runs no
 /// job by itself. A file that cannot be read keeps it run-all (`None`).
 fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
     if !cfg.workflows.scope_leaf_edits {
         return None;
     }
-    let rest = p.strip_prefix(".github/")?;
-    let lower = rest.to_ascii_lowercase();
-    // the names a workflow would use to read it, matched case-insensitively
-    let needles: &[&str] = match lower.as_str() {
+    let needles = service_needles(p)?;
+    if run_all_except(cfg, p, Some(".github/"), None) {
+        return None;
+    }
+    // Any tracked non-markdown file may read it (a script a workflow runs, a
+    // config): scanned as raw bytes, case-insensitively. The service files
+    // themselves are skipped. A file that cannot be read keeps it run-all.
+    for f in repo.tracked().ok()? {
+        if f == p || f.to_ascii_lowercase().ends_with(".md") || service_needles(&f).is_some() {
+            continue;
+        }
+        let bytes = std::fs::read(repo.path(&f)).ok()?.to_ascii_lowercase();
+        if needles
+            .iter()
+            .any(|n| bytes.windows(n.len()).any(|w| w == n.as_bytes()))
+        {
+            return None;
+        }
+    }
+    Some(format!(
+        "{p}: read by GitHub's services and named by no tracked non-markdown file, so it runs no job"
+    ))
+}
+
+/// The names a file GitHub's services read goes by (lowercase), or `None`.
+fn service_needles(p: &str) -> Option<&'static [&'static str]> {
+    let lower = p.strip_prefix(".github/")?.to_ascii_lowercase();
+    Some(match lower.as_str() {
         "dependabot.yml" | "dependabot.yaml" => &["dependabot.yml", "dependabot.yaml"],
         "codeowners" => &["codeowners"],
         "funding.yml" | "funding.yaml" => &["funding.yml", "funding.yaml"],
@@ -209,22 +234,7 @@ fn service_file(repo: &Repo, cfg: &Config, p: &str) -> Option<String> {
         _ if lower.starts_with("issue_template/") => &["issue_template"],
         _ if lower.starts_with("pull_request_template/") => &["pull_request_template"],
         _ => return None,
-    };
-    if run_all_except(cfg, p, Some(".github/"), None) {
-        return None;
-    }
-    for f in repo.tracked().ok()? {
-        if !(f.starts_with(".github/workflows/") || f.starts_with(".github/actions/")) {
-            continue;
-        }
-        let text = repo.read(&f).ok()?.to_ascii_lowercase();
-        if needles.iter().any(|n| text.contains(n)) {
-            return None;
-        }
-    }
-    Some(format!(
-        "{p}: read by GitHub's services and named by no workflow or action, so it runs no job"
-    ))
+    })
 }
 
 /// The tracked workflow files other than `p` (path, text), for the

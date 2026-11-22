@@ -679,9 +679,9 @@ artifacts:
       With scope_leaf_edits, .github/dependabot.yml (or .yaml), CODEOWNERS,
       FUNDING.yml, PULL_REQUEST_TEMPLATE.md and files under ISSUE_TEMPLATE/ or
       PULL_REQUEST_TEMPLATE/ select only the classes that claim them, instead
-      of everything, unless the adopter lists them in [run_all] or a tracked
-      file under .github/workflows/ or .github/actions/ contains their name
-      (case-insensitive; a name built at run time is not seen, the same limit
+      of everything, unless the adopter lists them in [run_all] or any other
+      tracked non-markdown file contains their name (case-insensitive, raw
+      bytes; a name built at run time is not seen, the same limit
       as the docs rule). Owner approved 2026-11-22, relayed (sieve#27 B).
     fields:
       priority: could
