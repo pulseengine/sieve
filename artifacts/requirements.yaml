@@ -369,7 +369,7 @@ artifacts:
       synth, sigil). Keep the fail-open rules on top: a BUILD, .bzl or
       MODULE change still selects everything (bazel-diff documents its
       possible-readers output as incomplete).
-    release: v0.4.0
+    release: v0.5.0
     fields:
       priority: could
       category: functional
@@ -577,7 +577,7 @@ artifacts:
   - id: REQ-032
     type: requirement
     title: Every lockfile is committed, CI resolves with it locked, and the audit covers it
-    status: draft
+    status: implemented
     release: v0.4.0
     description: >
       Every tracked Cargo.toml, nested workspaces included, resolves with
@@ -596,6 +596,9 @@ artifacts:
         printed, not failed: heapless 0.8.0 (RUSTSEC-2026-0574..0582, unsound)
         reaches sieve through faster-hex 0.10.1 from gix and needs heapless
         0.9.4 upstream.
+        2026-11-22: implemented on CI evidence: run 44807183418 (PR #22) and every
+        Test run since reject all three planted controls (stale lock, gitignored
+        nested lock, nested RUSTSEC-2020-0071 lock).
     links:
       - {type: satisfies, target: SSC-002}
 
@@ -702,6 +705,7 @@ artifacts:
     links:
       - {type: satisfies, target: REQ-016}
       - {type: satisfies, target: REQ-017}
+      - {type: satisfies, target: REQ-032}
 
   - id: FEAT-004
     type: feature
@@ -769,7 +773,7 @@ artifacts:
     type: feature
     title: "Bet B: independent per-adopter controls in plant (serves: guard for every switch)"
     status: draft
-    release: v0.4.0
+    release: v0.5.0
     description: >
       No direct objective; safety gate for every switch-over. sieve ships its
       planted-defect list for plant. Acceptance (plant, per adopter): at
@@ -785,7 +789,7 @@ artifacts:
     type: feature
     title: "Bet C: scoped workflow edits (serves: none directly; precondition for savings)"
     status: draft
-    release: v0.4.0
+    release: v0.5.0
     description: >
       Owner decision required (narrows the .github run-all rule). Acceptance: fixed
       narrowing list; equivalence over gale's 400 commits shows 0 narrower
@@ -803,7 +807,7 @@ artifacts:
     type: feature
     title: "Bet D: gale's first observed numbers and the cross-class build check (serves: O4 guard via observed misses)"
     status: draft
-    release: v0.4.0
+    release: v0.5.0
     description: >
       Acceptance: over 30 merged gale PRs after its switch, N of at least 30
       skipped class-instances compared, 0 of N observed misses, mean
@@ -822,7 +826,7 @@ artifacts:
     type: feature
     title: "Bet E: sieve classify as a signed WASI component under kiln (serves: O5)"
     status: draft
-    release: v0.4.0
+    release: v0.5.0
     description: >
       Serves O5 (eligible once O5 has an indicator script). Acceptance: CI
       runs the corpus and gale's 400 commits under kiln and wasmtime,

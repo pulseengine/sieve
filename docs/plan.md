@@ -152,3 +152,29 @@ The first v0.3.0 tag on f93b113 was withdrawn before its release run started
 Intel macOS builds (owner, 2026-11-20), so the release drops
 x86_64-apple-darwin and publishes 3 archives. v0.3.0 is re-tagged on the
 commit that makes that change.
+
+## v0.4.0 (prepared 2026-11-22)
+
+Shipped requirements:
+- REQ-033 `classify --format github-output --record <file>`: the JSON verdict
+  in the same call as the outputs, accepted by check-workflows gate (b)
+  (gale's switch, relay's pilot; sieve#25, implemented);
+- REQ-034 check-graph fails a `hand` entry that matches no tracked file
+  (sieve#23, implemented);
+- REQ-032 every lockfile committed, resolved `--locked` and audited, with
+  planted controls in the Test job (implemented on CI evidence);
+- gate (a) refuses `paths:` on any trigger, push included; `equivalence
+  --map` takes the union of outputs mapped to one class (gale, sieve#25);
+- REQ-027: the lock beside an implicit workspace root (no `[workspace]` in or
+  above the package) belongs to its class (jig replays: gale #450,
+  pulseengine.eu #402);
+- leaf scoping names a blobless or shallow checkout in its reason (sieve#27 C);
+- wasmtime differential pinned to v50.0.3 (RUSTSEC-2026-0587).
+
+Owner decision (2026-11-22, relayed by pulseengine.eu): cut now, and
+FEAT-008..011 and REQ-022 move to v0.5.0, because their fleet criteria
+(plant controls per adopter, gale's 30 PRs, kiln, signing) are not met.
+`rivet release status v0.4.0`: cuttable.
+
+Open for v0.4.x: sieve#24 (drift wiring), sieve#27 A and B (wait for an owner
+decision), signing the WASI component with wsc v0.12.2 (sigil#395 is fixed).
