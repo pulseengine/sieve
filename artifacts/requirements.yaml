@@ -561,12 +561,15 @@ artifacts:
         runs all 55 paths-mode corpus cases under wasmtime v50.0.3 (pinned),
         byte-identical to native. A divergent build fails 0/55 (checked
         locally). Open:
-        (1) kiln 0.7.3 refuses the meld-fused module on 3 filesystem imports
-        (kiln#687);
+        (1) kiln at main b66776a2 runs all 55 cases byte-identical (2026-11-21,
+        local, 1546 s vs 23 s under wasmtime) only when GITHUB_OUTPUT is
+        created first: kiln cannot yet create a file through open flags
+        (kiln SR-107, planned for kiln v0.9.0);
         (2) git mode fails open in the component, because gix 0.90 reads
         objects through mmap, which WASI lacks; the 19 git-mode cases are
         listed as not run;
-        (3) signing waits on sigil#395;
+        (3) sigil#395 is fixed in sigil v0.12.2 (2026-11-21); signing in
+        release.yml is not yet wired;
         (4) the gale 400-commit run is not yet wired.
     links:
       - {type: satisfies, target: SSC-002}
@@ -596,6 +599,48 @@ artifacts:
     links:
       - {type: satisfies, target: SSC-002}
 
+  - id: REQ-033
+    type: requirement
+    title: One classify call writes the outputs and records the JSON verdict
+    status: implemented
+    release: v0.4.0
+    description: >
+      `sieve classify --format github-output --record <file>` writes the
+      sieve.classify.v1 verdict (unresolved and explain included) to <file>
+      in the same call as the outputs, so an adopter can keep it as an
+      artifact for `sieve observe` without a second classify step, which
+      check-workflows gate (b) refuses. The record is written first; if it
+      cannot be written, or names a runner command file (GITHUB_OUTPUT,
+      GITHUB_ENV, GITHUB_PATH, GITHUB_STATE, GITHUB_STEP_SUMMARY), no output
+      is written and classify exits 2, so every gated job runs. Gate (b)
+      accepts the flag only with $RUNNER_TEMP/<name> or a relative path of
+      [A-Za-z0-9_.-/] with no `..` segment. Asked for by gale (sieve#25).
+    fields:
+      priority: must
+      category: functional
+      review: author-verified only (tests/cli.rs, tests/workflows_gates.rs); no independent review yet
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
+  - id: REQ-034
+    type: requirement
+    title: check-graph fails a hand entry that matches no tracked file
+    status: implemented
+    release: v0.4.0
+    description: >
+      The graph-inputs control fails each `hand` entry (a prefix or a file)
+      that claims no tracked file at HEAD, naming the class and the entry
+      (hand-matches-nothing). Before, only an empty cargo_glob or a class
+      claiming nothing failed, so a directory moved under churn left a dead
+      prefix that passed, and its new location ran everything unnoticed
+      (sieve#23).
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (tests/cli.rs; the rule mutant is killed); no independent review yet
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
@@ -623,6 +668,8 @@ artifacts:
       - {type: satisfies, target: REQ-011}
       - {type: satisfies, target: REQ-012}
       - {type: satisfies, target: REQ-023}
+      - {type: satisfies, target: REQ-033}
+      - {type: satisfies, target: REQ-034}
 
   - id: FEAT-002
     type: feature

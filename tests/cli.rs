@@ -320,3 +320,131 @@ fn paths_mode_reads_the_index_when_there_is_one_and_walks_only_without_git() {
         "without .git the walk reads it and the doc is not docs-only: {v}"
     );
 }
+
+fn classify_gh(
+    dir: &PathBuf,
+    paths: &[&str],
+    extra: &[&str],
+    out: &PathBuf,
+) -> (Option<i32>, String) {
+    let o = Command::new(BIN)
+        .args([
+            "classify",
+            "--config",
+            "sieve.toml",
+            "--format",
+            "github-output",
+        ])
+        .args(extra)
+        .arg("--paths")
+        .args(paths)
+        .current_dir(dir)
+        .env_remove("GATE_PROBE_FILES")
+        .env_remove("SIEVE_FAULT")
+        .env("GITHUB_OUTPUT", out)
+        .output()
+        .unwrap();
+    (
+        o.status.code(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
+}
+
+// rivet: verifies REQ-033
+#[test]
+fn record_writes_the_json_verdict_in_the_same_call_as_the_outputs() {
+    let d = tree("record");
+    let out = d.join("gh_out");
+    let rec = d.join("verdict.json");
+    let (code, err) = classify_gh(&d, &["a/src/lib.rs"], &["--record", "verdict.json"], &out);
+    assert_eq!(code, Some(0), "{err}");
+    let body = fs::read_to_string(&out).unwrap();
+    assert!(
+        body.contains("run_all=false\n") && body.contains("a=true\n") && body.contains("b=false\n"),
+        "{body}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&rec).unwrap()).unwrap();
+    assert_eq!(v["schema"], "sieve.classify.v1");
+    assert_eq!(v["run_all"], false);
+    assert_eq!(v["classes"]["a"], true);
+    assert_eq!(v["classes"]["b"], false);
+    assert!(v["explain"]["a"].is_array(), "{v}");
+    assert!(v.get("unresolved").is_some(), "{v}");
+}
+
+// rivet: verifies REQ-033
+#[test]
+fn a_record_that_cannot_be_written_writes_no_output_and_exits_2() {
+    let d = tree("record-fail");
+    // into GITHUB_OUTPUT itself: refused before anything is written
+    let out = d.join("gh_out");
+    let (code, err) = classify_gh(&d, &["a/src/lib.rs"], &["--record", "gh_out"], &out);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("runner command file"), "{err}");
+    assert!(!out.exists() || fs::read_to_string(&out).unwrap().is_empty());
+    // into a directory that does not exist
+    let (code, err) = classify_gh(
+        &d,
+        &["a/src/lib.rs"],
+        &["--record", "no/such/dir/v.json"],
+        &out,
+    );
+    assert_eq!(code, Some(2), "{err}");
+    assert!(!out.exists() || fs::read_to_string(&out).unwrap().is_empty());
+}
+
+// rivet: verifies REQ-034
+#[test]
+fn check_graph_fails_a_hand_entry_that_matches_no_tracked_file() {
+    let d = tree("dead-hand");
+    // class b's hand = ["b/"] has no b/ in the tree; class c mixes a live and a dead entry
+    fs::write(
+        d.join("sieve.toml"),
+        "[class.a]\ncargo = [\"a/Cargo.toml\"]\n[class.b]\nhand = [\"b/\"]\n[class.c]\nhand = [\"README.md\", \"gone/\"]\n",
+    )
+    .unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["add", "-A"][..],
+        &["commit", "-q", "-m", "x"][..],
+    ] {
+        let o = Command::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&d)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}");
+    }
+    let o = Command::new(BIN)
+        .args([
+            "check-graph",
+            "--config",
+            "sieve.toml",
+            "--control",
+            "graph-inputs",
+            "--format",
+            "json",
+        ])
+        .current_dir(&d)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("b: hand entry `b/` matches no tracked file"),
+        "{out}"
+    );
+    assert!(
+        out.contains("c: hand entry `gone/` matches no tracked file"),
+        "{out}"
+    );
+    assert!(!out.contains("`README.md` matches no"), "{out}");
+}

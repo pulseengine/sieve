@@ -157,6 +157,19 @@ pub fn cmd_check_graph(
             (_, None) => {} // graph failure already reported
             ("graph-inputs", Some(_)) if !tracked_ok => {} // refused above
             ("graph-inputs", Some(g)) => {
+                // sieve#23: each hand entry must still claim a tracked file. A
+                // moved directory leaves a dead prefix that claims nothing, and
+                // its new location then runs everything without anyone noticing.
+                for class in &cfg.classes {
+                    for h in &class.hand {
+                        let live = tracked
+                            .iter()
+                            .any(|f| graph::claimed(f, std::iter::once(h)));
+                        r.expect(c, live, "hand-matches-nothing", || {
+                            format!("{}: hand entry `{h}` matches no tracked file", class.name)
+                        });
+                    }
+                }
                 for (name, cg) in g {
                     r.expect(c, cg.unresolved.is_empty(), "unresolved", || {
                         format!("{name}: unresolved input(s) {:?}: the class always runs; resolve or record", &cg.unresolved[..cg.unresolved.len().min(3)])

@@ -179,6 +179,21 @@ fn trigger_state(wf: &Yaml) -> Option<Problem> {
             }
         }
         Some(on @ Yaml::Mapping(_)) => {
+            // sieve#25: a `paths:` on any trigger (push included) leaves the
+            // full runs on main incomplete; the pull_request case is detailed below.
+            if let Yaml::Mapping(h) = on {
+                for (ev, spec) in h {
+                    let ev = py_str(ev);
+                    if ev == "pull_request" {
+                        continue;
+                    }
+                    for k in ["paths", "paths-ignore"] {
+                        if get(spec, k).is_some() {
+                            return Some(("paths-filter", format!("`{ev}: {k}:` present")));
+                        }
+                    }
+                }
+            }
             let Some(pr) = get(on, "pull_request") else {
                 return Some(("no-pr", "no pull_request trigger".into()));
             };
@@ -638,13 +653,19 @@ fn classifier_jobs(wf: &Yaml) -> BTreeMap<String, (&Yaml, BTreeSet<String>)> {
 }
 
 /// Whether `run:` is exactly `sieve classify --config <this config> --base
-/// "$BASE_SHA" --event "$EVENT_NAME" --format github-output` (flags in any
-/// order, the program optionally given as a path ending in `sieve`).
+/// "$BASE_SHA" --event "$EVENT_NAME" --format github-output`, optionally with
+/// `--record <path>` (sieve#25, see [record_path_ok]); flags in any order, the
+/// program optionally given as a path ending in `sieve`.
 fn run_problem(run: &str, cfg_path: &str) -> Option<String> {
     let want = format!(
         "sieve classify --config {cfg_path} --base \"$BASE_SHA\" --event \"$EVENT_NAME\" --format github-output"
     );
-    let bad = || Some(format!("`run:` is {:?}, not exactly {want:?}", run.trim()));
+    let bad = || {
+        Some(format!(
+            "`run:` is {:?}, not exactly {want:?} (optionally with --record $RUNNER_TEMP/<file>)",
+            run.trim()
+        ))
+    };
     let run = run.trim();
     // Chaining, redirection, substitution, continuation and single quotes
     // cannot survive the token match below: each glues onto a token or adds an
@@ -689,7 +710,7 @@ fn run_problem(run: &str, cfg_path: &str) -> Option<String> {
         return bad();
     }
     let norm = |p: &str| p.strip_prefix("./").unwrap_or(p).to_string();
-    let (mut config, mut base, mut event, mut format) = (None, None, None, None);
+    let (mut config, mut base, mut event, mut format, mut record) = (None, None, None, None, None);
     let mut i = 2;
     while i < toks.len() {
         let (flag, val) = (toks[i].as_str(), toks.get(i + 1));
@@ -698,6 +719,7 @@ fn run_problem(run: &str, cfg_path: &str) -> Option<String> {
             "--base" => &mut base,
             "--event" => &mut event,
             "--format" => &mut format,
+            "--record" => &mut record,
             _ => return bad(),
         };
         let Some(v) = val else { return bad() };
@@ -709,11 +731,32 @@ fn run_problem(run: &str, cfg_path: &str) -> Option<String> {
     let base_ok = matches!(base.as_deref(), Some("$BASE_SHA" | "${BASE_SHA}"));
     let event_ok = matches!(event.as_deref(), Some("$EVENT_NAME" | "${EVENT_NAME}"));
     let config_ok = config.as_deref().map(norm).as_deref() == Some(cfg_path);
-    if base_ok && event_ok && config_ok && format.as_deref() == Some("github-output") {
+    if base_ok
+        && event_ok
+        && config_ok
+        && format.as_deref() == Some("github-output")
+        && record.as_deref().map_or(true, record_path_ok)
+    {
         None
     } else {
         bad()
     }
+}
+
+/// A `--record` value the gate accepts (sieve#25): `$RUNNER_TEMP/<name>` or a
+/// relative path, made of `[A-Za-z0-9_.-/]` with no `..` segment. No other
+/// variable, so the verdict cannot be pointed at $GITHUB_OUTPUT or $GITHUB_ENV.
+fn record_path_ok(v: &str) -> bool {
+    let rest = v
+        .strip_prefix("$RUNNER_TEMP/")
+        .or_else(|| v.strip_prefix("${RUNNER_TEMP}/"))
+        .unwrap_or(v);
+    !rest.is_empty()
+        && !rest.starts_with('/')
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_.-/".contains(c))
+        && rest.split('/').all(|s| !s.is_empty() && s != "..")
 }
 
 /// [problems] with how classifier job `cjid` runs the classifier.
