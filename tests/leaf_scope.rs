@@ -564,3 +564,25 @@ fn a_dependent_with_an_expression_matrix_selects_everything() {
     );
     assert_scoped(&v, &["b"]);
 }
+
+// rivet: verifies REQ-030
+#[test]
+fn a_checkout_without_the_workflow_blob_selects_everything_and_says_why() {
+    // A blobless (filter=blob:none) checkout: the workflow's blob at the
+    // merge base is not in the object store (sieve#27 C, found by jig).
+    let old = ci();
+    let new = old.replacen("make a", "make a2", 1);
+    let (d, base) = history(
+        "blobless",
+        CFG_ON,
+        &[(".github/workflows/ci.yml", old)],
+        &[(".github/workflows/ci.yml", Some(new))],
+    );
+    let oid = git(
+        &d,
+        &["rev-parse", &format!("{base}:.github/workflows/ci.yml")],
+    );
+    fs::remove_file(d.join(".git/objects").join(&oid[..2]).join(&oid[2..])).unwrap();
+    let v = classify_git(&d, &base);
+    assert_run_all(&v, "needs the history with blobs");
+}

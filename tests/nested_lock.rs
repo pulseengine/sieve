@@ -426,3 +426,32 @@ fn an_explicit_member_wins_over_exclude_and_nix_relative_paths_count() {
         assert_run_all(&classify(&d, "nested/ws/Cargo.lock"), file);
     }
 }
+
+// rivet: verifies REQ-027
+#[test]
+fn an_implicit_workspace_root_owns_the_lock_beside_it() {
+    // No manifest declares [workspace]: the root is a plain package (gale's
+    // layout) and fuzz/ a cargo-fuzz crate with a path dependency on it. Cargo
+    // makes each package its own workspace root, so fuzz/Cargo.lock pins the
+    // fuzz build only (jig replay: gale #450, pulseengine.eu #402).
+    let cfg = "[class.fuzz]\ncargo = [\"fuzz/Cargo.toml\"]\n[class.g]\ncargo = [\"Cargo.toml\"]\n";
+    let d = tree(
+        "implicit-root",
+        cfg,
+        &[
+            ("Cargo.toml", "[package]\nname = \"g\"\nversion = \"0.1.0\"\n"),
+            ("src/lib.rs", "\n"),
+            (
+                "fuzz/Cargo.toml",
+                "[package]\nname = \"g-fuzz\"\nversion = \"0.0.0\"\n\n[dependencies]\ng = { path = \"..\" }\n",
+            ),
+            ("fuzz/Cargo.lock", "version = 4\n"),
+            ("fuzz/src/main.rs", "fn main() {}\n"),
+        ],
+    );
+    let v = classify(&d, "fuzz/Cargo.lock");
+    assert_eq!(v["run_all"], false, "{v}");
+    assert_eq!(selected(&v), ["fuzz"], "{v}");
+    // the root lock stays built-in run-all
+    assert_run_all(&classify(&d, "Cargo.lock"), "is CI, toolchain");
+}

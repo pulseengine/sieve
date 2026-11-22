@@ -170,11 +170,21 @@ fn leaf_scope(
         ));
     };
     Some(
-        crate::gitrepo::blob_pair(&repo.root, r.base, r.head, p).and_then(|pair| match pair {
-            (Some(b), Some(h)) => crate::workflows::leaf_scope(cfg, p, &b, &h),
-            (None, _) => Err(format!("{p} is added")),
-            (_, None) => Err(format!("{p} is deleted")),
-        }),
+        crate::gitrepo::blob_pair(&repo.root, r.base, r.head, p)
+            // sieve#27 C: a blobless or shallow checkout loses all scoping
+            // here; say so instead of "object could not be found".
+            .map_err(|e| {
+                format!(
+                    "cannot read {p} at the merge base and head ({e}): leaf-workflow scoping \
+                     needs the history with blobs (actions/checkout with fetch-depth: 0 and no \
+                     blob filter)"
+                )
+            })
+            .and_then(|pair| match pair {
+                (Some(b), Some(h)) => crate::workflows::leaf_scope(cfg, p, &b, &h),
+                (None, _) => Err(format!("{p} is added")),
+                (_, None) => Err(format!("{p} is deleted")),
+            }),
     )
 }
 

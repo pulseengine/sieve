@@ -266,7 +266,11 @@ impl CargoWalk<'_> {
         // run-all. Only from a root walk: a crate reached as a path dependency
         // builds with its dependant's lock, not its own workspace's.
         if as_root {
-            let cw = cargo_workspace(repo, &mdir, &doc);
+            // A package with no [workspace] in it or above it is its own
+            // workspace root, and the lock beside it pins its build (cargo-fuzz
+            // crates, standalone tools).
+            let cw = cargo_workspace(repo, &mdir, &doc)
+                .or_else(|| pkg.is_some().then(|| manifest.to_string()));
             if let Some(w) = cw.as_ref().filter(|w| *w != manifest) {
                 cg.add(w.clone(), "cargo");
             }

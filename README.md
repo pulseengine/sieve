@@ -111,7 +111,10 @@ the classes the classifier `if:` reads for:
 - every job those need.
 
 An ungated changed job selects nothing, because it runs on every pull request
-anyway. The edit still selects everything when:
+anyway. The checkout needs the history with blobs (`actions/checkout` with
+`fetch-depth: 0` and no `filter: blob:none`): without the workflow at the merge
+base, the edit selects everything and the reason says so. The edit still
+selects everything when:
 - the file is added, deleted or reusable (`on: workflow_call`);
 - anything outside `jobs:` changed;
 - a job is removed;
