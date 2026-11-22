@@ -285,14 +285,14 @@ jobs:
           Linux x86_64 and Linux aarch64 archives are published.
 
           Falsification: this release is wrong if a change to a file that a
-          configured class's build or tests read yields `false` for that class
+          configured class's build or tests read yields \`false\` for that class
           (a false skip), if any failure (a crash, an unparseable manifest, an
           event other than pull_request, a missing base, a failed or empty
           diff) yields run_all false, or if a consumer observes a job failing
           on main that sieve classified as skippable on the pull request that
           introduced the failure. Evidence for each release is listed in
           docs/plan.md; plant holds the independent false-skip controls, and
-          `sieve equivalence` and `sieve observe` are the consumer-side gates.
+          \`sieve equivalence\` and \`sieve observe\` are the consumer-side gates.
 
           Verify this release:
 
