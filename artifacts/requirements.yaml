@@ -700,6 +700,26 @@ artifacts:
       - {type: constraint-satisfies, target: SC-006}
       - {type: derives-from, target: SSC-003}
 
+  - id: REQ-037
+    type: requirement
+    title: Config drift under churn is caught by documented scheduled wiring
+    status: implemented
+    release: v0.4.4
+    description: >
+      The README documents three pieces of adopter wiring: a weekly
+      check-graph on the default branch that fails on any refusal, sieve
+      observe on full runs on main or in the merge queue (m of N misses),
+      and a weekly replay of the last N merged PRs that counts run_all
+      verdicts by reason. Kill criterion (sieve#24): moving a claimed
+      directory or crate without updating sieve.toml turns check-graph red
+      within one run. No classify change.
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (tests/cli.rs, the planted move control); no independent review yet
+    links:
+      - {type: constraint-satisfies, target: SC-005}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
@@ -729,6 +749,7 @@ artifacts:
       - {type: satisfies, target: REQ-023}
       - {type: satisfies, target: REQ-033}
       - {type: satisfies, target: REQ-034}
+      - {type: satisfies, target: REQ-037}
 
   - id: FEAT-002
     type: feature

@@ -1,7 +1,7 @@
 //! CLI contract tests beyond the corpus: the crash path, exit codes, --version.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_sieve");
@@ -516,4 +516,80 @@ fn a_github_claim_counts_for_check_graph_under_scope_leaf_edits() {
     let o = run(false);
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stdout).contains("github: the graph claims no tracked file"));
+}
+
+fn git_in(d: &Path, args: &[&str]) {
+    let o = Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git {args:?}");
+}
+
+// rivet: verifies REQ-037
+#[test]
+fn moving_a_claimed_directory_turns_the_scheduled_check_graph_red() {
+    // the sieve#24 kill criterion: a directory moves, sieve.toml is not updated
+    let check = |d: &Path| {
+        let o = Command::new(BIN)
+            .args([
+                "check-graph",
+                "--config",
+                "sieve.toml",
+                "--control",
+                "graph-inputs",
+                "--format",
+                "json",
+            ])
+            .current_dir(d)
+            .output()
+            .unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    for (name, cfg, from, to, want) in [
+        (
+            "drift-hand",
+            "[class.a]\ncargo = [\"a/Cargo.toml\"]\n[class.docs]\nhand = [\"docs/\"]\n",
+            "docs",
+            "handbook",
+            "docs: hand entry `docs/` matches no tracked file",
+        ),
+        (
+            "drift-crate",
+            "[class.a]\ncargo = [\"a/Cargo.toml\"]\n[class.docs]\nhand = [\"docs/\"]\n",
+            "a",
+            "crates/a",
+            "the build graph cannot be derived: a/Cargo.toml",
+        ),
+    ] {
+        let d = tree(name);
+        fs::create_dir_all(d.join("docs")).unwrap();
+        fs::write(d.join("docs/guide.md"), "g\n").unwrap();
+        fs::write(d.join("sieve.toml"), cfg).unwrap();
+        git_in(&d, &["init", "-q"]);
+        git_in(&d, &["add", "-A"]);
+        git_in(&d, &["commit", "-q", "-m", "x"]);
+        let (code, out) = check(&d);
+        assert_eq!(code, Some(0), "{name} before the move: {out}");
+        if let Some(parent) = Path::new(to).parent() {
+            fs::create_dir_all(d.join(parent)).unwrap();
+        }
+        git_in(&d, &["mv", from, to]);
+        git_in(&d, &["commit", "-q", "-m", "move"]);
+        let (code, out) = check(&d);
+        assert_eq!(code, Some(1), "{name} after the move: {out}");
+        assert!(out.contains(want), "{name}: {out}");
+    }
 }
