@@ -728,8 +728,10 @@ artifacts:
     description: >
       sieve#41. For a local uses: resolved through an earlier same-repository
       actions/checkout path (sieve#36), a later run: step distrusts that path
-      only when one of its simple commands holds a writer anywhere in it (file
-      and git commands other than read-only git subcommands, in-place sed,
+      only when one of its simple commands is a writer, as the command name or
+      after a wrapper (file and git commands other than read-only git
+      subcommands and options, docker run/cp, cmake -E and build trees, gh
+      downloads and checkouts, GIT_DIR/GIT_WORK_TREE honoured, in-place sed,
       perl, yq or awk, sort -o, a find that deletes or executes, a
       redirection) and names the path: literally as a path component, through
       a variable assigned a path naming it (workflow, job or step env:, the
@@ -745,7 +747,7 @@ artifacts:
     fields:
       priority: should
       category: functional
-      review: fresh-context adversarial review 2026-11-25 of 7206093 reproduced 21 findings (11 regressions, 5 gaps, 1 hang, false refusals); all fixed with unit controls; always-true and always-false mutants killed; gale L18 probe 74/82, no false skip
+      review: fresh-context adversarial review 2026-11-25 of 7206093 reproduced 21 findings (11 regressions, 5 gaps, 1 hang, false refusals); all fixed with unit controls; second pass on 99672bd reproduced 12 more and the commit security review 4, all fixed with controls; always-true and always-false mutants killed; gale L18 probe 74/82, no false skip
     links:
       - {type: constraint-satisfies, target: SC-006}
       - {type: derives-from, target: REQ-035}

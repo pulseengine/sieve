@@ -37,6 +37,10 @@ struct Cmd {
     herestrings: Vec<String>,
     /// stdin comes from a pipe
     piped_in: bool,
+    /// here-documents opened on this command (their bodies follow the line)
+    want_heredocs: usize,
+    /// an input process substitution `<(...)` (its output may be code)
+    procsub_in: bool,
 }
 
 /// The text of a balanced `(...)` starting after the opening paren at `i`;
@@ -85,11 +89,53 @@ fn balanced(c: &[char], mut i: usize) -> Option<(String, usize)> {
 /// `$((...))` arithmetic: the inner text of a `$(` substitution that is
 /// itself one parenthesised group.
 fn is_arith(text: &str) -> bool {
-    let t = text.trim();
-    t.starts_with('(') && t.ends_with(')') && {
-        let c: Vec<char> = t.chars().collect();
-        balanced(&c, 1).is_some_and(|(_, end)| end == c.len() - 1)
+    // no trimming: `$( (cd x; ...) )` is a substitution of a subshell
+    let c: Vec<char> = text.chars().collect();
+    c.first() == Some(&'(')
+        && c.last() == Some(&')')
+        && balanced(&c, 1).is_some_and(|(_, end)| end == c.len() - 1)
+}
+
+/// The command substitutions inside arithmetic text (`$(( $(cmd) + 1 ))`),
+/// to be parsed as scripts; an unclosed one yields an unparseable script.
+fn arith_subs(text: &str) -> Vec<String> {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '$' && c.get(i + 1) == Some(&'(') {
+            match balanced(&c, i + 2) {
+                Some((t, end)) => {
+                    if is_arith(&t) {
+                        out.extend(arith_subs(&t));
+                    } else {
+                        out.push(t);
+                    }
+                    i = end + 1;
+                    continue;
+                }
+                None => {
+                    out.push("'".into());
+                    break;
+                }
+            }
+        }
+        if c[i] == '`' {
+            match (i + 1..c.len()).find(|&k| c[k] == '`') {
+                Some(end) => {
+                    out.push(c[i + 1..end].iter().collect());
+                    i = end + 1;
+                    continue;
+                }
+                None => {
+                    out.push("'".into());
+                    break;
+                }
+            }
+        }
+        i += 1;
     }
+    out
 }
 
 /// Split a script into simple commands. `None` when a quote, a substitution,
@@ -116,6 +162,8 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
     }
     let mut next_kind = Next::Word;
     let mut heredocs: Vec<String> = Vec::new();
+    // the command each pending here-document belongs to
+    let mut hd_targets: Vec<usize> = Vec::new();
     let mut piped = false;
     let mut i = 0;
     macro_rules! fw {
@@ -136,8 +184,15 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
     macro_rules! fc {
         ($pipe:expr) => {{
             fw!();
-            if !cur.words.is_empty() || !cur.redirects.is_empty() || !cur.herestrings.is_empty() {
+            if !cur.words.is_empty()
+                || !cur.redirects.is_empty()
+                || !cur.herestrings.is_empty()
+                || cur.want_heredocs > 0
+            {
                 cur.piped_in = piped;
+                for _ in 0..cur.want_heredocs {
+                    hd_targets.push(cmds.len());
+                }
                 cmds.push(std::mem::take(&mut cur));
             }
             piped = $pipe;
@@ -189,7 +244,9 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
                         '$' if c.get(j + 1) == Some(&'(') => {
                             let (text, end) = balanced(&c, j + 2)?;
                             word.push_str(&format!("$({text})"));
-                            if !is_arith(&text) {
+                            if is_arith(&text) {
+                                inner.extend(arith_subs(&text));
+                            } else {
                                 inner.push(text);
                             }
                             j = end + 1;
@@ -219,7 +276,9 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
             '$' if next == Some('(') => {
                 let (text, end) = balanced(&c, i + 2)?;
                 word.push_str(&format!("$({text})"));
-                if !is_arith(&text) {
+                if is_arith(&text) {
+                    inner.extend(arith_subs(&text));
+                } else {
                     inner.push(text);
                 }
                 in_word = true;
@@ -258,7 +317,8 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
             // `(( ... ))` arithmetic: one opaque word
             '(' if !in_word && next == Some('(') => {
                 let (text, end) = balanced(&c, i + 1)?;
-                if is_arith(&format!("({text})")) || text.starts_with('(') {
+                if is_arith(&text) {
+                    inner.extend(arith_subs(&text));
                     fc!(false);
                     i = end + 1;
                     continue;
@@ -273,7 +333,8 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
                     let rest: String = c[i + 1..].iter().collect();
                     let mut consumed = 0;
                     let mut lines = rest.split_inclusive('\n');
-                    for delim in std::mem::take(&mut heredocs) {
+                    let targets = std::mem::take(&mut hd_targets);
+                    for (n, delim) in std::mem::take(&mut heredocs).into_iter().enumerate() {
                         let mut body = String::new();
                         let mut closed = false;
                         for line in lines.by_ref() {
@@ -287,8 +348,12 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
                         if !closed {
                             return None;
                         }
-                        if let Some(last) = cmds.last_mut() {
-                            last.heredocs.push(body);
+                        let t = targets
+                            .get(n)
+                            .copied()
+                            .unwrap_or(cmds.len().saturating_sub(1));
+                        if let Some(owner) = cmds.get_mut(t) {
+                            owner.heredocs.push(body);
                         }
                     }
                     i += consumed;
@@ -389,12 +454,14 @@ fn parse(script: &str, depth: usize) -> Option<Vec<Cmd>> {
                         return None;
                     }
                     heredocs.push(delim);
+                    cur.want_heredocs += 1;
                     continue;
                 }
                 if next == Some('(') {
                     // input process substitution
                     let (text, end) = balanced(&c, i + 2)?;
                     inner.push(text);
+                    cur.procsub_in = true;
                     i = end + 1;
                     continue;
                 }
@@ -511,9 +578,6 @@ fn is_writer(name: &str) -> bool {
             | "dos2unix"
             | "unix2dos"
             | "git-lfs"
-            | "cmake"
-            | "docker"
-            | "podman"
             | "aws"
             | "gsutil"
             | "rclone"
@@ -573,12 +637,15 @@ fn is_reader(cmd: &[String]) -> bool {
                 || a.starts_with("--with-filename")
                 || a.starts_with("--count")
         }),
-        "git" => git_sub(args).is_some_and(|s| {
-            matches!(
-                s.as_str(),
-                "rev-parse" | "describe" | "log" | "show" | "rev-list"
-            )
-        }),
+        "git" => {
+            git_read_only(args)
+                && git_sub(args).is_some_and(|s| {
+                    matches!(
+                        s.as_str(),
+                        "rev-parse" | "describe" | "log" | "show" | "rev-list"
+                    )
+                })
+        }
         "sed" => !args.iter().any(|a| sed_in_place(a)),
         _ => false,
     }
@@ -603,18 +670,49 @@ fn git_sub(args: &[String]) -> Option<String> {
 }
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "busybox"];
-const INTERPRETERS: &[&str] = &[
-    "python",
-    "python3",
-    "perl",
-    "ruby",
-    "node",
-    "pwsh",
-    "powershell",
-    "deno",
-    "php",
-    "lua",
-];
+
+/// Interpreters that run inline code (`python3.12`, `nodejs`, `bun`, ...).
+fn is_interpreter(name: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    re(
+        &R,
+        r"^(python[0-9.]*|pypy[0-9.]*|perl[0-9.]*|ruby[0-9.]*|node|nodejs|deno|bun|php[0-9.]*|lua[0-9.]*|luajit|pwsh|powershell|tclsh|rscript|osascript|groovy|jshell)$",
+    )
+    .is_match(name)
+}
+
+/// Commands that run the rest of their words as another command.
+fn is_wrapper(name: &str) -> bool {
+    matches!(
+        name,
+        "sudo"
+            | "doas"
+            | "env"
+            | "command"
+            | "exec"
+            | "nice"
+            | "nohup"
+            | "builtin"
+            | "stdbuf"
+            | "timeout"
+            | "ionice"
+            | "chronic"
+            | "setsid"
+            | "flock"
+            | "unbuffer"
+            | "xvfb-run"
+            | "time"
+            | "strace"
+            | "ltrace"
+            | "watch"
+            | "retry"
+            | "chroot"
+            | "nsenter"
+            | "unshare"
+            | "runuser"
+            | "su"
+    )
+}
 
 fn basename(w: &str) -> String {
     let b = w.rsplit('/').next().unwrap_or(w).to_ascii_lowercase();
@@ -622,15 +720,24 @@ fn basename(w: &str) -> String {
 }
 
 /// The command's name (basename, lowercased) and the index of its first
-/// argument, after assignments and keywords. Wrappers are not skipped here:
-/// a writer anywhere in the command is found by `cmd_writes`.
+/// argument, after assignments, keywords and `function NAME`. A wrapper is
+/// returned as the name: `cmd_writes` then scans every word after it.
 fn command_name(words: &[String]) -> Option<(String, usize)> {
     let assign = re_assign();
+    let mut skip_next = false;
     for (i, w) in words.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
         if assign.is_match(w) {
             continue;
         }
         let base = basename(w);
+        if base == "function" {
+            skip_next = true;
+            continue;
+        }
         if matches!(
             base.as_str(),
             "!" | "{"
@@ -644,49 +751,7 @@ fn command_name(words: &[String]) -> Option<(String, usize)> {
                 | "done"
                 | "while"
                 | "until"
-                | "time"
-                | "function"
-                | "sudo"
-                | "doas"
-                | "env"
-                | "command"
-                | "exec"
-                | "nice"
-                | "nohup"
-                | "builtin"
-                | "stdbuf"
-                | "timeout"
-                | "ionice"
-                | "chronic"
-                | "setsid"
-                | "flock"
-                | "unbuffer"
-                | "xvfb-run"
-        ) && i + 1 < words.len()
-        {
-            // a wrapper's own options may follow; the real name is found by
-            // scanning every word in `cmd_writes`
-            if matches!(
-                base.as_str(),
-                "sudo"
-                    | "doas"
-                    | "env"
-                    | "command"
-                    | "exec"
-                    | "nice"
-                    | "nohup"
-                    | "builtin"
-                    | "stdbuf"
-                    | "timeout"
-                    | "ionice"
-                    | "chronic"
-                    | "setsid"
-                    | "flock"
-                    | "unbuffer"
-                    | "xvfb-run"
-            ) {
-                return Some((base, i + 1));
-            }
+        ) {
             continue;
         }
         return Some((base, i + 1));
@@ -889,7 +954,7 @@ impl Scan {
             if operand.is_empty() {
                 value
             } else {
-                format!("{value} {operand}")
+                format!("{value} {}", self.normalize(operand))
             }
         });
         let mut w = w.replace('\\', "/").to_lowercase();
@@ -1019,66 +1084,176 @@ impl Scan {
         }
     }
 
-    /// Whether this one command (normalized words `nw`) holds a writer.
-    fn cmd_writes(&self, w: &[String], nw: &[String], piped_in: bool) -> bool {
+    /// The words a writer in this command may write, if it holds one.
+    /// `heads` are the command-name positions: the name, or every word after
+    /// a wrapper (whose own options cannot be told from the command).
+    fn writer_targets(&self, w: &[String], nw: &[String], heads: &[usize]) -> Option<Vec<String>> {
         let start = w.iter().take_while(|x| re_assign().is_match(x)).count();
-        for k in start..nw.len() {
-            let word = &nw[k];
+        let all = |k: usize| w[k..].to_vec();
+        // values of `flags` (`-B dir`, `--prefix=dir`)
+        let values = |k: usize, flags: &[&str]| -> Vec<String> {
+            let mut out = Vec::new();
+            for (j, a) in w[k + 1..].iter().enumerate() {
+                for f in flags {
+                    if a == f {
+                        out.extend(w.get(k + 2 + j).cloned());
+                    } else if let Some(v) = a.strip_prefix(&format!("{f}=")) {
+                        out.push(v.to_string());
+                    } else if f.len() == 2
+                        && a.starts_with(f)
+                        && a.len() > 2
+                        && !f.starts_with("--")
+                    {
+                        out.push(a[2..].to_string());
+                    }
+                }
+            }
+            out
+        };
+        for &k in heads {
+            let Some(word) = nw.get(k) else { continue };
             // a command name held in an unknown variable may be anything
             if k == start && word.contains(UNKNOWN) {
-                return true;
+                return Some(all(k));
             }
             let name = basename(word);
             let rest = &nw[k + 1..];
-            let writes = match name.as_str() {
-                n if is_writer(n) => true,
-                "git" => git_sub(rest).map_or(true, |s| !git_reads(&s)),
-                "sed" | "gsed" => rest.iter().any(|a| sed_in_place(a)),
-                "perl" | "ruby" => rest.iter().any(|a| short_flag(a, 'i')),
-                "yq" => rest
+            let raw = &w[k + 1..];
+            let sub = rest
+                .iter()
+                .find(|a| !a.starts_with('-'))
+                .map(String::as_str);
+            let t = match name.as_str() {
+                n if is_writer(n) => Some(all(k)),
+                // git options are case-sensitive (`-C` vs `-c`): read the raw
+                // words; an environment assignment (GIT_EXTERNAL_DIFF=...)
+                // can make any subcommand run code
+                "git" if start > 0 || !git_read_only(raw) => {
+                    let mut t = match git_sub(raw).as_deref() {
+                        // refs and remotes, not work-tree paths
+                        Some(
+                            "fetch" | "push" | "remote" | "tag" | "notes" | "config" | "branch",
+                        ) => values(k, &["-C", "--git-dir", "--work-tree"]),
+                        _ => all(k),
+                    };
+                    for v in [
+                        "GIT_DIR",
+                        "GIT_WORK_TREE",
+                        "GIT_COMMON_DIR",
+                        "GIT_INDEX_FILE",
+                    ] {
+                        if self.vars.contains_key(v) {
+                            t.push(format!("${v}"));
+                        }
+                    }
+                    Some(t)
+                }
+                "git" => None,
+                "sed" | "gsed" if rest.iter().any(|a| sed_in_place(a)) => Some(all(k)),
+                "perl" | "ruby" if rest.iter().any(|a| short_flag(a, 'i')) => Some(all(k)),
+                "yq" if rest
                     .iter()
-                    .any(|a| short_flag(a, 'i') || a.starts_with("--inplace")),
-                "awk" | "gawk" | "mawk" | "nawk" => rest.iter().any(|a| {
-                    a == "-i" || a.contains('>') || a.contains("system") || a.contains("getline")
-                }),
-                "sort" => rest
-                    .iter()
-                    .any(|a| short_flag(a, 'o') || a.starts_with("--output")),
-                "find" => rest.iter().any(|a| {
+                    .any(|a| short_flag(a, 'i') || a.starts_with("--inplace")) =>
+                {
+                    Some(all(k))
+                }
+                "awk" | "gawk" | "mawk" | "nawk"
+                    if rest.iter().any(|a| {
+                        a == "-i"
+                            || a.contains('>')
+                            || a.contains("system")
+                            || a.contains("getline")
+                    }) =>
+                {
+                    Some(all(k))
+                }
+                "sort"
+                    if rest
+                        .iter()
+                        .any(|a| short_flag(a, 'o') || a.starts_with("--output")) =>
+                {
+                    Some(all(k))
+                }
+                "find"
+                    if rest.iter().any(|a| {
+                        matches!(
+                            a.as_str(),
+                            "-delete"
+                                | "-exec"
+                                | "-execdir"
+                                | "-ok"
+                                | "-okdir"
+                                | "-fprint"
+                                | "-fprint0"
+                                | "-fprintf"
+                                | "-fls"
+                        )
+                    }) =>
+                {
+                    Some(all(k))
+                }
+                // gh writes its output flags, a clone, or the cwd
+                // (`pr checkout`, `release download` without -D)
+                "gh" if rest.iter().any(|a| {
                     matches!(
                         a.as_str(),
-                        "-delete"
-                            | "-exec"
-                            | "-execdir"
-                            | "-ok"
-                            | "-okdir"
-                            | "-fprint"
-                            | "-fprint0"
-                            | "-fprintf"
-                            | "-fls"
-                    )
-                }),
-                "gh" => rest.iter().any(|a| {
-                    matches!(
-                        a.as_str(),
-                        "-d" | "--dir" | "-o" | "--output" | "clone" | "--clobber"
+                        "checkout"
+                            | "sync"
+                            | "clone"
+                            | "download"
+                            | "-d"
+                            | "--dir"
+                            | "-o"
+                            | "--output"
+                            | "--clobber"
                     ) || a.starts_with("--dir=")
                         || a.starts_with("--output=")
-                }),
-                // code on stdin
-                n if SHELLS.contains(&n) || INTERPRETERS.contains(&n) => {
-                    piped_in
-                        && !rest.iter().any(|a| {
-                            !a.starts_with('-') || matches!(a.as_str(), "-c" | "-e" | "-E")
-                        })
+                }) =>
+                {
+                    Some(gh_targets(&w[k..]))
                 }
-                _ => false,
+                // cmake writes its build and install trees (the cwd without
+                // -B), or anything under -E
+                "cmake" => Some(if rest.iter().any(|a| a == "-e") {
+                    all(k)
+                } else {
+                    let mut t = values(k, &["-B", "--build", "--prefix", "--install-prefix"]);
+                    t.extend(raw.iter().filter_map(|a| {
+                        a.strip_prefix("-D")
+                            .filter(|d| {
+                                d.starts_with("CMAKE_")
+                                    && (d.contains("_DIR") || d.contains("PREFIX"))
+                            })
+                            .and_then(|d| d.split_once('=').map(|(_, v)| v.to_string()))
+                    }));
+                    t
+                }),
+                // docker and podman write through cp, mounts and exports;
+                // build only reads its context
+                "docker" | "podman" | "nerdctl"
+                    if matches!(
+                        sub,
+                        Some(
+                            "cp" | "run"
+                                | "create"
+                                | "compose"
+                                | "container"
+                                | "export"
+                                | "save"
+                                | "volume"
+                        )
+                    ) || (sub == Some("buildx")
+                        && rest.iter().any(|a| a.starts_with("--output") || a == "-o")) =>
+                {
+                    Some(all(k))
+                }
+                _ => None,
             };
-            if writes {
-                return true;
+            if t.is_some() {
+                return t;
             }
         }
-        false
+        None
     }
 
     /// Whether these commands may write at, under or above `p`.
@@ -1096,9 +1271,33 @@ impl Scan {
                 let (k, v) = a.split_once('=').unwrap();
                 self.assign(k, v);
             }
-            if w.first().map(String::as_str) == Some("for") && w.len() > 1 {
-                let rest = w.iter().skip(3).cloned().collect::<Vec<_>>().join(" ");
-                let name = w[1].clone();
+            // `${x:=v}` and `${x=v}` assign
+            static DEFAULT: OnceLock<Regex> = OnceLock::new();
+            let dflt = re(&DEFAULT, r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=([^}]*)\}");
+            for a in w {
+                for c in dflt.captures_iter(a) {
+                    let (k, v) = (c[1].to_string(), c[2].to_string());
+                    self.assign(&k, &v);
+                }
+            }
+            // `for x in ...`, also after `then`, `do`, `else`, `{`
+            let fpos = w
+                .iter()
+                .take_while(|x| {
+                    matches!(
+                        x.as_str(),
+                        "then" | "do" | "else" | "{" | "!" | "if" | "while" | "until" | "elif"
+                    )
+                })
+                .count();
+            if w.get(fpos).map(String::as_str) == Some("for") && w.len() > fpos + 1 {
+                let rest = w
+                    .iter()
+                    .skip(fpos + 3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let name = w[fpos + 1].clone();
                 if rest.is_empty() {
                     self.unknown(&name);
                 } else {
@@ -1109,8 +1308,10 @@ impl Scan {
             let Some((name, first)) = command_name(w) else {
                 continue;
             };
-            let args = &w[first.min(w.len())..];
-            match name.as_str() {
+            // shell builtins may sit behind `builtin`, `command` and the like
+            let (eff, eff_first) = builtin_name(w).unwrap_or((name.clone(), first));
+            let args = &w[eff_first.min(w.len())..];
+            match eff.as_str() {
                 "export" | "declare" | "local" | "readonly" | "typeset" => {
                     let nameref = args.iter().any(|a| short_flag(a, 'n'));
                     for a in args.iter().filter(|a| !a.starts_with('-')) {
@@ -1152,11 +1353,18 @@ impl Scan {
                 _ => {}
             }
             let nw: Vec<String> = w.iter().map(|x| self.normalize(x)).collect();
-            // shells and eval anywhere in the command: their code runs here
-            for (k, word) in nw.iter().enumerate() {
-                let b = basename(word);
-                if SHELLS.contains(&b.as_str()) {
-                    let rest = &w[k + 1..];
+            let h = first.saturating_sub(1);
+            let heads: Vec<usize> = if is_wrapper(&name) {
+                (h..w.len()).collect()
+            } else {
+                vec![h]
+            };
+            // a shell, eval or interpreter at a command position: its code runs
+            // here (the first one only; nested ones are in its code)
+            for &k in &heads {
+                let b = basename(&nw[k]);
+                let rest = &w[k + 1..];
+                if SHELLS.contains(&b.as_str()) || b == "source" || b == "." {
                     if let Some(c) = rest.iter().position(|a| {
                         a.starts_with('-')
                             && !a.starts_with("--")
@@ -1170,64 +1378,50 @@ impl Scan {
                     for body in cmd.heredocs.iter().chain(cmd.herestrings.iter()) {
                         hit |= self.script(body, depth);
                     }
-                } else if b == "eval" {
-                    hit |= self.script(&w[k + 1..].join(" "), depth);
-                } else if INTERPRETERS.contains(&b.as_str()) {
-                    let rest = &w[k + 1..];
-                    let inline = rest
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, a)| {
-                            matches!(
-                                a.as_str(),
-                                "-c" | "-e" | "-E" | "--eval" | "-Command" | "-command" | "-r"
-                            ) || (a.starts_with('-')
-                                && !a.starts_with("--")
-                                && (a.contains('e') || a.ends_with('c')))
-                        })
-                        .filter_map(|(j, _)| rest.get(j + 1));
-                    for code in inline {
-                        hit |= self.code_hits(code);
+                    // code from a process substitution (`bash <(curl ...)`)
+                    if cmd.procsub_in {
+                        hit = true;
+                    }
+                    if cmd.piped_in && stdin_is_code(rest) {
+                        hit = true;
+                    }
+                    break;
+                }
+                if b == "eval" {
+                    hit |= self.script(&rest.join(" "), depth);
+                    break;
+                }
+                if is_interpreter(&b) {
+                    // inline code, or code on stdin, here-documents and
+                    // process substitutions: anything but a script file
+                    if !script_file(rest) || has_inline(rest) {
+                        for a in rest {
+                            hit |= self.code_hits(a);
+                        }
                     }
                     for body in cmd.heredocs.iter().chain(cmd.herestrings.iter()) {
                         hit |= self.code_hits(body);
                     }
+                    if cmd.procsub_in || (cmd.piped_in && stdin_is_code(rest)) {
+                        hit = true;
+                    }
+                    break;
                 }
-            }
-            // xargs and parallel take a writer's arguments from stdin
-            if let Some(k) = nw
-                .iter()
-                .position(|x| matches!(basename(x).as_str(), "xargs" | "parallel"))
-            {
-                if nw[k + 1..].iter().any(|x| {
-                    let b = basename(x);
-                    is_writer(&b)
-                        || SHELLS.contains(&b.as_str())
-                        || matches!(
-                            b.as_str(),
-                            "git" | "sed" | "gsed" | "perl" | "ruby" | "find" | "eval"
-                        )
-                }) {
-                    hit = true;
-                }
-            }
-            if self.cmd_writes(w, &nw, cmd.piped_in) {
-                let from = first.min(w.len()).saturating_sub(1);
-                let named = if name == "gh" {
-                    gh_targets(&w[from..]).iter().any(|a| self.word_hits(a))
-                } else {
-                    w[from..].iter().any(|a| self.word_hits(a))
-                };
-                if named || self.in_p() {
-                    hit = true;
-                }
-                // code on stdin into a shell or interpreter
-                if cmd.piped_in
-                    && nw.iter().any(|x| {
+                // xargs and parallel take a writer's arguments from stdin
+                if matches!(b.as_str(), "xargs" | "parallel")
+                    && nw[k + 1..].iter().any(|x| {
                         let b = basename(x);
-                        SHELLS.contains(&b.as_str()) || INTERPRETERS.contains(&b.as_str())
+                        is_writer(&b)
+                            || SHELLS.contains(&b.as_str())
+                            || is_interpreter(&b)
+                            || matches!(b.as_str(), "git" | "sed" | "gsed" | "find" | "eval")
                     })
                 {
+                    hit = true;
+                }
+            }
+            if let Some(targets) = self.writer_targets(w, &nw, &heads) {
+                if self.in_p() || targets.iter().any(|a| self.word_hits(a)) {
                     hit = true;
                 }
             }
@@ -1236,8 +1430,135 @@ impl Scan {
     }
 }
 
+/// The first operand is a script file (a path with `/` or a script
+/// extension), whose code is not in the command.
+fn script_file(args: &[String]) -> bool {
+    static EXT: OnceLock<Regex> = OnceLock::new();
+    let ext = re(
+        &EXT,
+        r"(?i)\.(sh|bash|zsh|py|pl|rb|js|mjs|cjs|ts|ps1|php|lua|r|tcl)$",
+    );
+    args.iter()
+        .find(|a| !a.starts_with('-') && !a.starts_with('+'))
+        .is_some_and(|a| a != "-" && a != "/dev/stdin" && (a.contains('/') || ext.is_match(a)))
+}
+
+/// An inline-code flag (`-c`, `-e`, `-p`, `--eval=...`, `eval`).
+fn has_inline(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "-c" | "-e"
+                | "-E"
+                | "-p"
+                | "-r"
+                | "--eval"
+                | "--print"
+                | "-Command"
+                | "-command"
+                | "eval"
+        ) || a.starts_with("--eval=")
+            || a.starts_with("--print=")
+            || (a.starts_with('-')
+                && !a.starts_with("--")
+                && a[1..].chars().all(|x| x.is_ascii_alphabetic())
+                && a.contains(['c', 'e', 'p']))
+    })
+}
+
 fn short_flag(a: &str, f: char) -> bool {
     a.starts_with('-') && !a.starts_with("--") && a[1..].contains(f)
+}
+
+/// A shell or interpreter with these arguments reads its code from stdin:
+/// no `-c`/`-e` code argument and no script-file operand (a path with `/` or
+/// a script extension), or an explicit `-s`, `-` or `/dev/stdin`. Unsure
+/// counts as code.
+fn stdin_is_code(args: &[String]) -> bool {
+    let inline = args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "-c" | "-e" | "-E" | "--eval" | "-Command" | "-command"
+        ) || (a.starts_with('-')
+            && !a.starts_with("--")
+            && a[1..].chars().all(|x| x.is_ascii_alphabetic())
+            && a.contains(['c', 'e']))
+    });
+    if inline {
+        return false;
+    }
+    static EXT: OnceLock<Regex> = OnceLock::new();
+    let ext = re(
+        &EXT,
+        r"(?i)\.(sh|bash|zsh|py|pl|rb|js|mjs|cjs|ts|ps1|php|lua)$",
+    );
+    let explicit = args.iter().any(|a| {
+        a == "-"
+            || a == "/dev/stdin"
+            || (short_flag(a, 's') && a[1..].chars().all(|x| x.is_ascii_alphabetic()))
+    });
+    let file = args.iter().any(|a| {
+        !a.starts_with('-') && !a.starts_with('+') && (a.contains('/') || ext.is_match(a))
+    });
+    explicit || !file
+}
+
+/// git with a subcommand that writes nothing, and no option that makes it
+/// write a file or run a program (`-c` config, `--output`, `--ext-diff`,
+/// `--upload-pack`, `-O` pager, ...).
+fn git_read_only(args: &[String]) -> bool {
+    let Some(sub) = git_sub(args) else {
+        return false;
+    };
+    git_reads(&sub)
+        && !args.iter().any(|a| {
+            let a = a.as_str();
+            matches!(a, "-c" | "-u" | "-p" | "--paginate")
+                || a.starts_with("--config-env")
+                || a.starts_with("--exec")
+                || a.starts_with("--output")
+                || a.starts_with("--upload-pack")
+                || a.starts_with("-O")
+                || a.starts_with("--open-files-in-pager")
+                || a.starts_with("--ext-diff")
+                || a.starts_with("--textconv")
+                || a.starts_with("--receive-pack")
+        })
+}
+
+/// The builtin a command runs behind `builtin`, `command`, `exec` and other
+/// wrappers (and their options), for `cd`, `export`, `read` and `printf -v`.
+fn builtin_name(words: &[String]) -> Option<(String, usize)> {
+    let assign = re_assign();
+    let mut wrapped = false;
+    for (i, w) in words.iter().enumerate() {
+        let b = basename(w);
+        if assign.is_match(w) || matches!(b.as_str(), "!" | "{" | "then" | "else" | "do" | "time") {
+            continue;
+        }
+        if matches!(
+            b.as_str(),
+            "builtin"
+                | "command"
+                | "exec"
+                | "env"
+                | "nice"
+                | "nohup"
+                | "sudo"
+                | "doas"
+                | "timeout"
+                | "stdbuf"
+                | "setsid"
+        ) {
+            wrapped = true;
+            continue;
+        }
+        if wrapped && (w.starts_with('-') || w.chars().all(|c| c.is_ascii_digit() || c == '.')) {
+            continue;
+        }
+        return Some((b, i + 1));
+    }
+    None
 }
 
 fn sed_in_place(a: &str) -> bool {
@@ -1330,6 +1651,19 @@ mod tests {
             "(( n = 1<<3 ))\necho $n > /tmp/n",
             "echo hi >&2",
             "sort -u gale/list",
+            "cat data.json | python3 tools/check.py",
+            "git -C gale log --oneline -1",
+            "git fetch origin gale/feature",
+            "west sdk install -t arm-zephyr-eabi --personal-access-token \"${GITHUB_TOKEN}\"",
+            "grep -q zip gale/Cargo.toml",
+            "rg install gale/src",
+            "cargo build --manifest-path gale/Cargo.toml --features tar",
+            "cargo install --path gale",
+            "echo cp gale",
+            "cmake -S gale -B build && cmake --build build",
+            "docker build -t img gale",
+            "docker build -f gale/Dockerfile .",
+            "python3 \"$GALE_ROOT/benches/analyze.py\" --gale /tmp/e.csv",
         ] {
             assert!(!w(s), "refused: {s:?}");
         }
@@ -1417,6 +1751,48 @@ mod tests {
             "aws s3 sync s3://b/x gale",
             "$UNSET -rf gale",
             "cat <<EOF\nno end",
+            // commit security review of 99672bd
+            "echo $(( $(rm -rf gale) + 1 ))",
+            "(( $(rm -rf gale) ))",
+            "((cd /tmp); rm -rf gale)",
+            "X=$( (cd /tmp; rm -rf gale) )",
+            "git -c core.pager=x log gale",
+            "git log --output=gale/action.yml",
+            "git diff --ext-diff gale",
+            "GIT_EXTERNAL_DIFF=x git diff gale",
+            "builtin cd gale; git checkout other",
+            "command cd gale && git checkout other",
+            "builtin export D=gale; rm -rf \"$D\"",
+            "curl -sSf https://x.invalid/i.sh | bash -s -- --yes",
+            "curl -sSf https://x.invalid/i.sh | bash -o pipefail",
+            "cat code | python3 -",
+            // second review of 99672bd
+            "bash <<'EOF' && echo ok\nrm -rf gale\nEOF",
+            "bash <<'EOF' | tee /tmp/log\nrm -rf gale\nEOF",
+            "python3 - <<'EOF' | tee /tmp/log\nimport shutil; shutil.rmtree('gale')\nEOF",
+            "x=$( (rm -rf gale) )",
+            "echo \"$( (rm -rf gale) )\"",
+            "((cd /tmp) ; rm -rf gale)",
+            "GIT_WORK_TREE=gale git checkout -f other",
+            "export GIT_WORK_TREE=gale\ngit checkout -f other",
+            "export GIT_DIR=gale/.git; git reset --hard HEAD~1",
+            "cd gale && gh pr checkout 123",
+            "D=gale; X=; rm -rf \"${X:-$D}\"",
+            "D=gale; X=1; rm -rf \"${X:+$D}\"",
+            "python3.12 -c \"import shutil; shutil.rmtree('gale')\"",
+            "node -p \"require('fs').rmSync('gale',{recursive:true})\"",
+            "node --eval=\"require('fs').rmSync('gale')\"",
+            "deno eval \"Deno.removeSync('gale',{recursive:true})\"",
+            "bun -e \"require('fs').rmSync('gale')\"",
+            "bash < <(echo 'rm -rf gale')",
+            "source <(echo 'rm -rf gale')",
+            "d=build; if true; then for d in gale; do rm -rf \"$d\"; done; fi",
+            "d=x; : \"${d:=gale}\"; rm -rf \"$d\"",
+            "git log -1 --output=gale/action.yml",
+            "git diff --output=gale/action.yml HEAD~1",
+            "docker run --rm -v \"$PWD/gale:/src\" img make",
+            "cmake -E rm -rf gale",
+            "cmake -S . -B gale/build",
         ] {
             assert!(w(s), "missed: {s:?}");
         }
@@ -1430,6 +1806,13 @@ mod tests {
         ));
         // a working directory in, or above, the path
         assert!(may_write("git checkout other", &[], "gale", "gale"));
+        assert!(may_write("gh pr checkout 123", &[], "gale", "gale"));
+        assert!(may_write(
+            "git checkout -f other",
+            &[("GIT_WORK_TREE".into(), "gale".into())],
+            "",
+            "gale"
+        ));
         assert!(may_write("git checkout other", &[], "a", "a/gale"));
         assert!(may_write(
             "git checkout other",

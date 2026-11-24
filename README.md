@@ -176,10 +176,13 @@ reusable workflows are not inlined. A step that rewrites the workspace root (a `
 checkout` of another ref before a local `uses:`) is not detected. An action
 input that rewrites a checked-out path is seen only when its key is
 path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). A later `run:` step rewrites the path
-when one of its commands holds a writer (git other than its read-only
-subcommands, rm, mv, cp, tar, rsync, curl, docker, ..., an in-place `sed`,
-`perl`, `yq` or `awk`, `sort -o`, a redirection; anywhere in the command, so
-`sudo -u x rm` and function bodies count) and names the path: literally,
+when one of its commands is a writer (git other than its read-only
+subcommands and options, rm, mv, cp, tar, rsync, curl, an in-place `sed`,
+`perl`, `yq` or `awk`, `sort -o`, `docker run`/`cp`, `cmake -E` or its build
+and install trees, `gh` downloads and checkouts, a redirection; as the command
+name or anywhere after a wrapper such as `sudo -u x` or `timeout 5m`) and names
+the path or runs in it. A writer's name as a mere argument (`grep -q zip`,
+`west sdk install`) is not a writer. The path is named: literally,
 through a variable assigned a path naming it (step, job or workflow `env:`,
 the script, a `for` loop, an array, an expansion operand), or by running in
 it (`cd`, `working-directory:`). Shell comments, reads (`grep`, `cat`,
