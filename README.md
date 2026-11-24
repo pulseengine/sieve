@@ -182,7 +182,8 @@ subcommands and options, rm, mv, cp, tar, rsync, curl, an in-place `sed`,
 and install trees, `gh` downloads and checkouts, a redirection; as the command
 name or anywhere after a wrapper such as `sudo -u x` or `timeout 5m`) and names
 the path or runs in it. A writer's name as a mere argument (`grep -q zip`,
-`west sdk install`) is not a writer. The path is named: literally,
+`west sdk install`) is not a writer; a writer word after an unknown command (`with-device rm`)
+counts when a later word names the path outright. The path is named: literally,
 through a variable assigned a path naming it (step, job or workflow `env:`,
 the script, a `for` loop, an array, an expansion operand), or by running in
 it (`cd`, `working-directory:`). Shell comments, reads (`grep`, `cat`,

@@ -1009,6 +1009,33 @@ impl Scan {
         })
     }
 
+    /// `word` names `p` itself: literally, through a variable naming it, or
+    /// as a relative path from a known cwd; an unknown value alone does not.
+    fn names_outright(&self, word: &str) -> bool {
+        let n = self.normalize(word);
+        if n.contains(TAINT) {
+            return true;
+        }
+        let n = n.replace(UNKNOWN, "");
+        let mut segs = vec![n.clone()];
+        if let Some((_, tail)) = n.split_once('=') {
+            segs.push(tail.to_string());
+        }
+        segs.iter().any(|s| {
+            self.aligned(s)
+                || s.strip_prefix(ROOT)
+                    .and_then(fold)
+                    .is_some_and(|f| self.at_or_under(&f))
+                || (!s.starts_with(['/', ROOT, OUTSIDE, OPAQUE])
+                    && self.cwds.iter().any(|c| match c {
+                        Cwd::Path(b) => {
+                            fold(&format!("{b}/{s}")).is_some_and(|f| self.at_or_under(&f))
+                        }
+                        _ => false,
+                    }))
+        })
+    }
+
     /// Where a `cd` (or a `working-directory:`) to `word` may land.
     fn place(&self, word: &str) -> Vec<Cwd> {
         let s = self.normalize(word);
@@ -1119,21 +1146,91 @@ impl Scan {
             let name = basename(word);
             let rest = &nw[k + 1..];
             let raw = &w[k + 1..];
-            let sub = rest
-                .iter()
-                .find(|a| !a.starts_with('-'))
-                .map(String::as_str);
+            // the subcommand, after global options (and the values of those
+            // that take one: docker -H/--context/-c/--config/-l, ...)
+            let sub = {
+                let mut it = rest.iter();
+                let mut found = None;
+                while let Some(a) = it.next() {
+                    if a.starts_with('-') {
+                        if !a.contains('=')
+                            && matches!(
+                                a.as_str(),
+                                "-h" | "--host"
+                                    | "--context"
+                                    | "-c"
+                                    | "--config"
+                                    | "-l"
+                                    | "--log-level"
+                                    | "--tlscacert"
+                                    | "--tlscert"
+                                    | "--tlskey"
+                                    | "--url"
+                                    | "--connection"
+                                    | "--identity"
+                                    | "--root"
+                                    | "--runroot"
+                                    | "--storage-driver"
+                            )
+                        {
+                            it.next();
+                        }
+                        continue;
+                    }
+                    found = Some(a.as_str());
+                    break;
+                }
+                found
+            };
+            // GIT_* variables that make git run code or move its tree
+            let git_env = self.vars.keys().any(|v| {
+                v.starts_with("GIT_")
+                    && !matches!(
+                        v.as_str(),
+                        "GIT_TERMINAL_PROMPT"
+                            | "GIT_COMMITTER_NAME"
+                            | "GIT_COMMITTER_EMAIL"
+                            | "GIT_AUTHOR_NAME"
+                            | "GIT_AUTHOR_EMAIL"
+                    )
+            }) || w[..k].iter().any(|x| re_assign().is_match(x));
             let t = match name.as_str() {
                 n if is_writer(n) => Some(all(k)),
                 // git options are case-sensitive (`-C` vs `-c`): read the raw
                 // words; an environment assignment (GIT_EXTERNAL_DIFF=...)
                 // can make any subcommand run code
-                "git" if start > 0 || !git_read_only(raw) => {
+                "git" if git_env || !git_read_only(raw) => {
+                    let risky = raw.iter().any(|a| {
+                        a == "-c"
+                            || a.starts_with("--upload-pack")
+                            || a.starts_with("--receive-pack")
+                            || a.starts_with("--exec")
+                            || a.starts_with("--config-env")
+                    });
                     let mut t = match git_sub(raw).as_deref() {
-                        // refs and remotes, not work-tree paths
+                        // refs and remotes, not work-tree paths; a local
+                        // path remote and a config file are paths
                         Some(
                             "fetch" | "push" | "remote" | "tag" | "notes" | "config" | "branch",
-                        ) => values(k, &["-C", "--git-dir", "--work-tree"]),
+                        ) if !risky && !git_env => {
+                            let mut t = values(
+                                k,
+                                &["-C", "--git-dir", "--work-tree", "-f", "--file", "--blob"],
+                            );
+                            t.extend(
+                                raw.iter()
+                                    .filter(|a| {
+                                        a.starts_with("./")
+                                            || a.starts_with("../")
+                                            || a.starts_with('/')
+                                            || a.starts_with('~')
+                                            || a.starts_with("file:")
+                                            || a.starts_with('$')
+                                    })
+                                    .cloned(),
+                            );
+                            t
+                        }
                         _ => all(k),
                     };
                     for v in [
@@ -1242,7 +1339,7 @@ impl Scan {
                                 | "save"
                                 | "volume"
                         )
-                    ) || (sub == Some("buildx")
+                    ) || (matches!(sub, Some("buildx" | "build" | "image" | "builder"))
                         && rest.iter().any(|a| a.starts_with("--output") || a == "-o")) =>
                 {
                     Some(all(k))
@@ -1361,9 +1458,34 @@ impl Scan {
             };
             // a shell, eval or interpreter at a command position: its code runs
             // here (the first one only; nested ones are in its code)
+            // `env X=v cmd`, `sudo X=v cmd`: assignments after a wrapper
+            if is_wrapper(&name) {
+                for a in w[h + 1..].iter().filter(|x| re_assign().is_match(x)) {
+                    let (k, v) = a.split_once('=').unwrap();
+                    self.assign(k, v);
+                }
+            }
             for &k in &heads {
                 let b = basename(&nw[k]);
                 let rest = &w[k + 1..];
+                // wrappers that run a string as shell code
+                if matches!(b.as_str(), "su" | "runuser" | "flock" | "sudo") {
+                    if let Some(c) = rest.iter().position(|a| a == "-c" || a == "--command") {
+                        match rest.get(c + 1) {
+                            Some(code) => hit |= self.script(code, depth),
+                            None => hit = true,
+                        }
+                    }
+                    for a in rest.iter().filter_map(|a| a.strip_prefix("--command=")) {
+                        hit |= self.script(a, depth);
+                    }
+                }
+                if b == "watch" {
+                    let ops: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
+                    let joined = ops.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+                    hit |= self.script(&joined, depth);
+                    break;
+                }
                 if SHELLS.contains(&b.as_str()) || b == "source" || b == "." {
                     if let Some(c) = rest.iter().position(|a| {
                         a.starts_with('-')
@@ -1424,6 +1546,16 @@ impl Scan {
                 if self.in_p() || targets.iter().any(|a| self.word_hits(a)) {
                     hit = true;
                 }
+            } else if !treats_args_as_data(&name) {
+                // an unknown wrapper (`with-device rm -rf p`, `pnpm exec rm
+                // -rf p`): a later writer word followed by a word that names
+                // `p` outright (not merely an unknown value) counts
+                let later: Vec<usize> = (h + 1..w.len()).collect();
+                if let Some(targets) = self.writer_targets(w, &nw, &later) {
+                    if targets.iter().any(|a| self.names_outright(a)) {
+                        hit = true;
+                    }
+                }
             }
         }
         hit
@@ -1464,6 +1596,75 @@ fn has_inline(args: &[String]) -> bool {
                 && a[1..].chars().all(|x| x.is_ascii_alphabetic())
                 && a.contains(['c', 'e', 'p']))
     })
+}
+
+/// Commands known to take their arguments as data, not as a command to run:
+/// a writer's name among them (`grep -q zip`, `west sdk install`, `cargo
+/// install`) is not a writer.
+fn treats_args_as_data(name: &str) -> bool {
+    matches!(
+        name,
+        "echo"
+            | "printf"
+            | "grep"
+            | "egrep"
+            | "fgrep"
+            | "rg"
+            | "ag"
+            | "test"
+            | "["
+            | "[["
+            | "cargo"
+            | "west"
+            | "make"
+            | "ninja"
+            | "meson"
+            | "apt-get"
+            | "apt"
+            | "dnf"
+            | "yum"
+            | "brew"
+            | "pip"
+            | "pip3"
+            | "rustup"
+            | "cat"
+            | "head"
+            | "tail"
+            | "wc"
+            | "jq"
+            | "yq"
+            | "awk"
+            | "sed"
+            | "git"
+            | "gh"
+            | "cmake"
+            | "docker"
+            | "podman"
+            | "nerdctl"
+            | "renode-test"
+            | "renode"
+            | "true"
+            | "false"
+            | ":"
+            | "exit"
+            | "return"
+            | "set"
+            | "shift"
+            | "trap"
+            | "export"
+            | "declare"
+            | "local"
+            | "readonly"
+            | "unset"
+            | "cd"
+            | "pushd"
+            | "popd"
+            | "read"
+            | "case"
+            | "esac"
+            | "for"
+            | "select"
+    )
 }
 
 fn short_flag(a: &str, f: char) -> bool {
@@ -1793,6 +1994,23 @@ mod tests {
             "docker run --rm -v \"$PWD/gale:/src\" img make",
             "cmake -E rm -rf gale",
             "cmake -S . -B gale/build",
+            // commit security review of 8143d2b
+            "with-device rm -rf gale",
+            "pnpm exec rm -rf gale",
+            "npx --yes shx rm -rf gale",
+            "git config -f gale/.git/config core.hooksPath x",
+            "git fetch -c \"core.sshCommand=rm -rf gale\" origin",
+            "git fetch --upload-pack='rm -rf gale' origin",
+            "git push ../gale HEAD:main",
+            "env GIT_EXTERNAL_DIFF=x git diff gale",
+            "env GIT_WORK_TREE=gale git checkout -f other",
+            "docker -H unix:///x run -v \"$PWD/gale:/s\" img",
+            "docker --context c cp x:/a gale",
+            "docker build -o gale .",
+            "su runner -c 'rm -rf gale'",
+            "runuser -u runner -- bash -c 'rm -rf gale'",
+            "flock /tmp/l -c 'rm -rf gale'",
+            "watch -n1 rm -rf gale",
         ] {
             assert!(w(s), "missed: {s:?}");
         }
