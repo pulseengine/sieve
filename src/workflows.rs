@@ -1382,6 +1382,18 @@ fn reads_needs(y: &Yaml, skip: &[&str]) -> bool {
     walk(y, skip)
 }
 
+/// `get` with the key matched without case (action inputs are case-insensitive).
+fn get_ci<'a>(y: &'a Yaml, name: &str) -> Option<&'a Yaml> {
+    match y {
+        Yaml::Mapping(h) => h
+            .iter()
+            .find(|(k, _)| py_str(k).eq_ignore_ascii_case(name))
+            .map(|(_, v)| v)
+            .filter(|v| !matches!(v, Yaml::Null)),
+        _ => None,
+    }
+}
+
 /// sieve#36: each step's local `uses:` values, rewritten through the job's
 /// earlier same-repository `actions/checkout` steps: after a checkout with
 /// `with: path: gale`, `./gale/.github/actions/x` is the repository's own
@@ -1412,16 +1424,17 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
             .unwrap_or_default();
         if action == "actions/checkout" {
             let with = get(st, "with");
+            // action inputs are matched without case, as GitHub does
             let path = with
-                .and_then(|w| get_nn(w, "path"))
+                .and_then(|w| get_ci(w, "path"))
                 .map(py_str)
                 .unwrap_or_default();
-            let repo = with.and_then(|w| get_nn(w, "repository")).map(py_str);
+            let repo = with.and_then(|w| get_ci(w, "repository")).map(py_str);
             if path.contains("${{") || path.split('/').any(|c| c == "..") {
                 unknown = true;
             }
             // another ref of this repository puts other action code there
-            let pinned = with.and_then(|w| get_nn(w, "ref")).is_some();
+            let pinned = with.and_then(|w| get_ci(w, "ref")).is_some();
             let same = !pinned
                 && match repo.as_deref().map(str::trim) {
                     None => true,
@@ -1434,17 +1447,6 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
         } else if action.contains("checkout") {
             // a checkout sieve cannot model (a fork, a wrapper)
             unknown = true;
-        }
-        // a later step that rewrites a checked-out path (`rm -rf gale && git
-        // clone other gale`) makes that path untrusted
-        if let Some(run) = get(st, "run").map(py_str) {
-            if touches.is_match(&run) {
-                for (p, same) in paths.iter_mut() {
-                    if !p.is_empty() && run.contains(p.as_str()) {
-                        *same = false;
-                    }
-                }
-            }
         }
         let mut seeds = Vec::new();
         collect_uses(st, &mut seeds);
@@ -1484,6 +1486,44 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
                     ))
                 }
                 None => step.push(s),
+            }
+        }
+        // A later step that may rewrite a checked-out path makes it untrusted:
+        // a `run:` that names it, or runs in it (`working-directory:`), with a
+        // file or git command; any other action with an input pointing at or
+        // under it. (The workspace root is not tracked this way: a step that
+        // rewrites the root is a limit for every local `uses:`.)
+        let under = |v: &str, p: &str| {
+            let v = norm(
+                v.trim()
+                    .trim_start_matches("$GITHUB_WORKSPACE")
+                    .trim_start_matches('/'),
+            );
+            v == p || v.starts_with(&format!("{p}/"))
+        };
+        if action != "actions/checkout" {
+            if let Some(run) = get(st, "run").map(py_str) {
+                let wd = get_ci(st, "working-directory")
+                    .map(py_str)
+                    .unwrap_or_default();
+                if touches.is_match(&run) {
+                    for (p, same) in paths.iter_mut() {
+                        if !p.is_empty() && (run.contains(p.as_str()) || under(&wd, p)) {
+                            *same = false;
+                        }
+                    }
+                }
+            }
+            if !action.is_empty() {
+                let inputs: Vec<String> = entries(get(st, "with"))
+                    .into_iter()
+                    .map(|(_, v)| py_str(v))
+                    .collect();
+                for (p, same) in paths.iter_mut() {
+                    if !p.is_empty() && inputs.iter().any(|v| under(v, p)) {
+                        *same = false;
+                    }
+                }
             }
         }
         out.push(step);

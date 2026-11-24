@@ -1360,3 +1360,43 @@ fn a_closing_brace_pair_inside_a_string_literal_does_not_end_the_expression() {
     );
     assert_run_all(&v, "reads `needs` outside its `if:`");
 }
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_reads_inputs_without_case_and_sees_other_rewriters() {
+    let cases = [
+        (
+            "i36c-ref-case",
+            format!("      - uses: actions/checkout@v4\n        with:\n          Path: gale\n          Ref: main\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+        (
+            "i36c-workdir",
+            format!("{CHECKOUT_GALE}      - working-directory: gale\n        run: git checkout other-branch\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+        (
+            "i36c-other-action",
+            format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: gale/\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+    // an unrelated input that merely contains the name does not count
+    let v = renode_case(
+        "i36c-cache-key",
+        &format!("{CHECKOUT_GALE}      - uses: actions/cache@v4\n        with:\n          path: ~/.cache/renode\n          key: gale-renode\n{USE_RENODE}"),
+    );
+    assert_scoped(&v, &[]);
+}

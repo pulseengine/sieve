@@ -168,11 +168,13 @@ composite actions and local reusable workflows are inlined, recursively (a
 `./<p>/...` path after a same-repository `actions/checkout` with `path: <p>`
 earlier in the job resolves to the repository's own `./...`); a
 local `uses:` that resolves to no tracked file, or sits under a path checked
-out from another repository or ref (or rewritten by a later `run:`), or follows
+out from another repository or ref (or rewritten by a later step: a file or
+git command naming it or run in it, or an action input pointing into it), or follows
 a checkout sieve cannot model (a fork, an expression or `..` path), a linter job gated by an
 `if:` that is not the classifier form, or a linter step behind its own
 step-level gate makes the edit run everything. Remote actions and remote
-reusable workflows are not inlined. Only those names are detected: any other check that reads
+reusable workflows are not inlined. A step that rewrites the workspace root (a `git
+checkout` of another ref before a local `uses:`) is not detected. Only those names are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.
