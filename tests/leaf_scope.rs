@@ -1173,3 +1173,324 @@ fn linter_detection_reads_uses_as_yaml_not_text() {
     );
     assert_scoped(&v, &["b"]);
 }
+
+// ── sieve#36, sieve#37 (gale's L18) ───────────────────────────────────────
+
+/// renode.yml: gale's shape, a checkout under `path:` then a local action
+/// through that path (`steps` replaces the job's steps).
+fn renode_wf(steps: &str) -> String {
+    format!("name: renode\non:\n  pull_request:\n  merge_group:\njobs:\n  renode:\n    runs-on: ubuntu-24.04\n    steps:\n{steps}")
+}
+
+const CHECKOUT_GALE: &str =
+    "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          path: gale\n";
+const USE_RENODE: &str =
+    "      - uses: ./gale/.github/actions/setup-renode\n      - run: echo ok\n";
+
+fn renode_case(name: &str, steps: &str) -> serde_json::Value {
+    let p = ".github/dependabot.yml";
+    edit_files(
+        name,
+        &[
+            (".github/workflows/renode.yml", renode_wf(steps)),
+            (
+                ".github/actions/setup-renode/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: echo renode\n      shell: bash\n"
+                    .into(),
+            ),
+            (p, "x: 1\n".into()),
+        ],
+        &[(p, Some("x: 2\n".into()))],
+    )
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_local_action_under_a_same_repo_checkout_path_resolves() {
+    let v = renode_case("i36-gale", &format!("{CHECKOUT_GALE}{USE_RENODE}"));
+    assert_scoped(&v, &[]);
+    // `repository: ${{ github.repository }}` is the same repository
+    let same = "      - uses: actions/checkout@v4\n        with:\n          repository: ${{ github.repository }}\n          path: gale\n";
+    let v = renode_case("i36-same-repo", &format!("{same}{USE_RENODE}"));
+    assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_local_action_under_an_unprovable_checkout_path_runs_everything() {
+    let other = "      - uses: actions/checkout@v4\n        with:\n          repository: other/repo\n          path: gale\n";
+    let expr =
+        "      - uses: actions/checkout@v4\n        with:\n          path: ${{ matrix.p }}\n";
+    let cases = [
+        (
+            "i36-other-repo",
+            format!("{other}{USE_RENODE}"),
+            "another repository",
+        ),
+        (
+            "i36-path-expr",
+            format!("{expr}{USE_RENODE}"),
+            "cannot model",
+        ),
+        (
+            "i36-use-before",
+            format!("{USE_RENODE}{CHECKOUT_GALE}"),
+            "names no tracked action",
+        ),
+        (
+            "i36-overwritten",
+            format!("{CHECKOUT_GALE}{other}{USE_RENODE}"),
+            "another repository",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
+
+// rivet: verifies REQ-030
+#[test]
+fn the_word_needs_in_a_run_comment_is_not_a_needs_read() {
+    let commented = |cmd: &str| {
+        ci().replacen(
+            "      - run: make a\n",
+            &format!("      - run: |\n          # prove curl exists before anything needs it\n          {cmd}\n"),
+            1,
+        )
+    };
+    let p = ".github/workflows/ci.yml";
+    let v = edit_files(
+        "i37-comment",
+        &[(p, commented("make a"))],
+        &[(p, Some(commented("make a2")))],
+    );
+    assert_scoped(&v, &["a"]);
+    // the same job reading needs through a step env still refuses
+    let reads = |cmd: &str| {
+        commented(cmd).replacen(
+            "      - run: |\n          # prove",
+            "      - env:\n          A: ${{ needs.changes.outputs.a }}\n        run: |\n          # prove",
+            1,
+        )
+    };
+    let v = edit_files(
+        "i37-env-read",
+        &[(p, reads("make a"))],
+        &[(p, Some(reads("make a2")))],
+    );
+    assert_run_all(&v, "reads `needs` outside its `if:`");
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_fails_closed_on_forks_refs_rewrites_and_dotdot() {
+    let with = |extra: &str| {
+        format!("      - uses: actions/checkout@v4\n        with:\n          path: gale\n{extra}")
+    };
+    let cases = [
+        (
+            "i36b-fork",
+            format!("      - uses: my/checkout@v4\n        with:\n          path: gale\n{USE_RENODE}"),
+            "cannot model",
+        ),
+        ("i36b-ref", format!("{}{USE_RENODE}", with("          ref: main\n")), "another repository or ref"),
+        (
+            "i36b-rewrite",
+            format!("{CHECKOUT_GALE}      - run: rm -rf gale && git clone https://example.invalid/x gale\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+        (
+            "i36b-dotdot-path",
+            format!("      - uses: actions/checkout@v4\n        with:\n          path: x/../gale\n{USE_RENODE}"),
+            "cannot model",
+        ),
+        (
+            "i36b-dotdot-uses",
+            format!("{CHECKOUT_GALE}      - uses: ./gale/../gale/.github/actions/setup-renode\n"),
+            "`..` segment",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+    // the action name is matched without case
+    let v = renode_case(
+        "i36b-case",
+        &format!(
+            "      - uses: Actions/Checkout@v4\n        with:\n          path: gale\n{USE_RENODE}"
+        ),
+    );
+    assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-030
+#[test]
+fn a_closing_brace_pair_inside_a_string_literal_does_not_end_the_expression() {
+    // reviewer r4/r5: `}}` inside '...' in format() is not the expression end
+    let gate = |cmd: &str| {
+        ci().replacen(
+            "      - run: make a\n",
+            &format!("      - run: |\n          A='${{{{ format('{{{{\"a\":{{0}}}}}}', needs.changes.outputs.a) }}}}'; echo \"$A\" | grep -q true || exit 0\n          {cmd}\n"),
+            1,
+        )
+    };
+    let p = ".github/workflows/ci.yml";
+    let v = edit_files(
+        "i37b-format",
+        &[(p, gate("make a"))],
+        &[(p, Some(gate("make a2")))],
+    );
+    assert_run_all(&v, "reads `needs` outside its `if:`");
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_reads_inputs_without_case_and_sees_other_rewriters() {
+    let cases = [
+        (
+            "i36c-ref-case",
+            format!("      - uses: actions/checkout@v4\n        with:\n          Path: gale\n          Ref: main\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+        (
+            "i36c-workdir",
+            format!("{CHECKOUT_GALE}      - working-directory: gale\n        run: git checkout other-branch\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+        (
+            "i36c-other-action",
+            format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: gale/\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+    // an unrelated input that merely contains the name does not count
+    let v = renode_case(
+        "i36c-cache-key",
+        &format!("{CHECKOUT_GALE}      - uses: actions/cache@v4\n        with:\n          path: ~/.cache/renode\n          key: gale-renode\n{USE_RENODE}"),
+    );
+    assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_sees_defaults_parents_and_duplicate_inputs() {
+    let git_step = "      - run: git checkout other-branch\n";
+    let job_defaults = format!("{CHECKOUT_GALE}{git_step}{USE_RENODE}");
+    let cases: Vec<(&str, String, &str)> = vec![
+        ("i36d-dest-dot", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: .\n{USE_RENODE}"), "another repository or ref"),
+        ("i36d-dest-dotdot", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: x/../gale\n{USE_RENODE}"), "another repository or ref"),
+        ("i36d-dup-keys", format!("      - uses: actions/checkout@v4\n        with:\n          Path: gale\n          path: gale\n{USE_RENODE}"), "cannot model"),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    // job- and workflow-level `defaults.run.working-directory: gale`
+    for (name, wf) in [
+        (
+            "i36d-job-defaults",
+            renode_wf(&job_defaults).replacen(
+                "    runs-on: ubuntu-24.04\n",
+                "    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        working-directory: gale\n",
+                1,
+            ),
+        ),
+        (
+            "i36d-wf-defaults",
+            renode_wf(&job_defaults).replacen(
+                "jobs:\n",
+                "defaults:\n  run:\n    working-directory: gale\njobs:\n",
+                1,
+            ),
+        ),
+    ] {
+        let p = ".github/dependabot.yml";
+        let v = edit_files(
+            name,
+            &[
+                (".github/workflows/renode.yml", wf),
+                (
+                    ".github/actions/setup-renode/action.yml",
+                    "runs:\n  using: composite\n  steps:\n    - run: echo renode\n      shell: bash\n".into(),
+                ),
+                (p, "x: 1\n".into()),
+            ],
+            &[(p, Some("x: 2\n".into()))],
+        );
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains("another repository or ref") {
+            bad.push(format!("{name}: run_all={} reason={reason:?}", v["run_all"]));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_handles_case_backslashes_and_more_path_keys() {
+    let cases = [
+        ("i36e-backslash", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: 'GALE\\sub'\n{USE_RENODE}")),
+        ("i36e-drive", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: 'C:\\w'\n{USE_RENODE}")),
+        ("i36e-cwd-key", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          cwd: .\n{USE_RENODE}")),
+        ("i36e-suffix-key", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          extract_dir: .\n{USE_RENODE}")),
+        ("i36e-run-case", format!("{CHECKOUT_GALE}      - run: rm -rf GALE\n{USE_RENODE}")),
+    ];
+    let mut bad = vec![];
+    for (name, steps) in cases {
+        let v = renode_case(name, &steps);
+        if v["run_all"] != true {
+            bad.push(format!(
+                "{name}: run_all={} reason={:?}",
+                v["run_all"], v["reason"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_checkout_path_with_a_backslash_is_not_modelled() {
+    let steps = format!(
+        "      - uses: actions/checkout@v4\n        with:\n          path: 'x\\gale'\n      - run: rm -rf x/gale\n{USE_RENODE}"
+    );
+    let v = renode_case("i36f-backslash-path", &steps);
+    assert_run_all(&v, "cannot model");
+}

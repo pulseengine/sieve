@@ -127,7 +127,8 @@ selects everything when:
   `runner`, or a `strategy` computed from an expression;
 - an affected job reads `needs` outside its `if:` and `needs:` (in `env:`,
   `with:` or a `run:` script, which could skip its own work on a classifier
-  output);
+  output); only `${{ … }}` and `if:` values count, so the word in a
+  shell comment does not;
 - a job in the closure has any `if:` other than the exact classifier form or
   `always()`/`!cancelled()`;
 - the file uses a YAML merge key;
@@ -163,11 +164,19 @@ need: a step whose `run:` or `uses:` (a local composite action included)
 names actionlint, yamllint, zizmor, pre-commit, prek, super-linter,
 megalinter, checkov, prettier, typos, codespell, reuse, markdownlint, lychee,
 check-jsonschema, editorconfig-checker, biome, dprint or taplo. Local
-composite actions and local reusable workflows are inlined, recursively; a
-local `uses:` that resolves to no tracked file, a linter job gated by an
+composite actions and local reusable workflows are inlined, recursively (a
+`./<p>/...` path after a same-repository `actions/checkout` with `path: <p>`
+earlier in the job resolves to the repository's own `./...`); a
+local `uses:` that resolves to no tracked file, or sits under a path checked
+out from another repository or ref (or rewritten by a later step: a file or
+git command naming it or run in it, or an action input pointing into it), or follows
+a checkout sieve cannot model (a fork, an expression or `..` path), a linter job gated by an
 `if:` that is not the classifier form, or a linter step behind its own
 step-level gate makes the edit run everything. Remote actions and remote
-reusable workflows are not inlined. Only those names are detected: any other check that reads
+reusable workflows are not inlined. A step that rewrites the workspace root (a `git
+checkout` of another ref before a local `uses:`) is not detected. An action
+input that rewrites a checked-out path is seen only when its key is
+path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). Only those names are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.
