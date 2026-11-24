@@ -547,6 +547,8 @@ fn is_writer(name: &str) -> bool {
             | "sd"
             | "ditto"
             | "sponge"
+            | "rimraf"
+            | "trash"
             | "mv"
             | "cp"
             | "ln"
@@ -1684,7 +1686,15 @@ impl Scan {
             let heads: Vec<usize> = real.into_iter().collect();
             // an unknown command may run its later words as a command
             // (interpreters and shells have their own handling above)
-            let open = !treats_args_as_data(&rname)
+            // data tools that run another command (`npm exec`, `yarn dlx`,
+            // `go run`, `bazel run`, `dotnet tool run`, `cargo run`) are open
+            let runs_other = real.is_some_and(|r| {
+                w[r + 1..]
+                    .iter()
+                    .take(3)
+                    .any(|a| matches!(a.as_str(), "exec" | "run" | "dlx" | "x"))
+            });
+            let open = (!treats_args_as_data(&rname) || runs_other)
                 && !is_interpreter(&rname)
                 && !SHELLS.contains(&rname.as_str());
             // a shell, eval or interpreter at a command position: its code runs
@@ -1826,6 +1836,37 @@ impl Scan {
                         .any(|a| a == "-m");
                     // (with -m the words after the module are its arguments)
                     let inline = !module && has_inline(rest);
+                    // a module other than a read-only one, with an argument naming
+                    // `p` outright, counts
+                    if module {
+                        let m = rest
+                            .iter()
+                            .skip_while(|a| a.as_str() != "-m")
+                            .nth(1)
+                            .map(|s| s.as_str())
+                            .unwrap_or("");
+                        let read_only = matches!(
+                            m.split('.').next().unwrap_or(""),
+                            "pytest"
+                                | "unittest"
+                                | "mypy"
+                                | "pylint"
+                                | "flake8"
+                                | "pip"
+                                | "coverage"
+                                | "doctest"
+                                | "pydoc"
+                                | "compileall"
+                                | "py_compile"
+                                | "build"
+                                | "black"
+                                | "ruff"
+                                | "isort"
+                        );
+                        if !read_only && rest.iter().any(|a| self.names_outright(a)) {
+                            hit = true;
+                        }
+                    }
                     if (!script_file(rest) && !module) || inline {
                         for a in rest {
                             hit |= self.code_hits(a);
@@ -1856,8 +1897,12 @@ impl Scan {
             if let Some(targets) = self.writer_targets(w, &nw, &heads) {
                 // a cwd in `p` counts for relative targets (or none), not for
                 // absolute ones outside (`curl -o /tmp/x`)
-                let relative =
-                    targets.is_empty() || targets.iter().any(|a| self.relative_target(a));
+                // a cwd in `p` counts, unless the writer's targets are all given
+                // and none is relative (`cp x /tmp`, `curl -o /tmp/x`): an
+                // extractor, a downloader without -o or a clone writes the cwd
+                let relative = !targets_explicit(w, &heads)
+                    || targets.is_empty()
+                    || targets.iter().any(|a| self.relative_target(a));
                 if (self.in_p() && relative) || targets.iter().any(|a| self.word_hits(a)) {
                     hit = true;
                 }
@@ -1881,8 +1926,9 @@ impl Scan {
                     .iter()
                     .any(|&k| nw[k].contains(UNKNOWN) || w[k].contains("$(") || w[k].contains('`'));
                 if let Some(targets) = self.writer_targets(w, &nw, &later) {
-                    let relative =
-                        targets.is_empty() || targets.iter().any(|a| self.relative_target(a));
+                    let relative = !targets_explicit(w, &later)
+                        || targets.is_empty()
+                        || targets.iter().any(|a| self.relative_target(a));
                     if (self.in_p() && relative) || targets.iter().any(|a| self.names_outright(a)) {
                         hit = true;
                     }
@@ -1929,6 +1975,58 @@ fn has_inline(args: &[String]) -> bool {
                 && a[1..].chars().all(|x| x.is_ascii_alphabetic())
                 && a.contains(['c', 'e', 'p']))
     })
+}
+
+/// The writer at the first of `heads` writes only the paths its operands
+/// name (`cp`, `rm`, `mkdir`, `curl -o`, `wget -O`/`-P`): its cwd matters
+/// only through relative operands. Extractors, clones and downloaders
+/// without an output flag write the cwd itself.
+fn targets_explicit(words: &[String], heads: &[usize]) -> bool {
+    let Some(&k) = heads.iter().find(|&&k| {
+        words.get(k).is_some_and(|w| {
+            let b = basename(w);
+            is_writer(&b)
+                || matches!(
+                    b.as_str(),
+                    "git"
+                        | "gh"
+                        | "sed"
+                        | "gsed"
+                        | "perl"
+                        | "ruby"
+                        | "yq"
+                        | "awk"
+                        | "gawk"
+                        | "sort"
+                        | "find"
+                        | "cmake"
+                        | "docker"
+                        | "podman"
+                        | "openssl"
+                )
+        })
+    }) else {
+        return false;
+    };
+    let b = basename(&words[k]);
+    let rest = &words[k + 1..];
+    match b.as_str() {
+        "cp" | "mv" | "rm" | "rmdir" | "mkdir" | "ln" | "install" | "touch" | "link" | "unlink"
+        | "tee" | "ditto" | "rsync" | "scp" | "sponge" | "shred" | "truncate" | "rename"
+        | "dos2unix" | "unix2dos" | "sd" | "openssl" | "sed" | "gsed" | "perl" | "ruby" | "yq"
+        | "sort" => true,
+        "curl" => rest.iter().any(|a| {
+            a == "-o"
+                || a.starts_with("--output")
+                || (a.starts_with('-') && !a.starts_with("--") && a.ends_with('o'))
+        }),
+        "wget" => rest.iter().any(|a| {
+            matches!(a.as_str(), "-O" | "-P")
+                || a.starts_with("--output-document")
+                || a.starts_with("--directory-prefix")
+        }),
+        _ => false,
+    }
 }
 
 /// Commands known to take their arguments as data, not as a command to run:
@@ -2511,6 +2609,10 @@ mod tests {
             // fourth review pass on ffe06e0
             "npx @vercel/ncc build src/index.js -o gale/dist",
             "go build -o gale/bin/tool ./cmd/tool",
+            // commit security review of 05d3492
+            "npm exec -- rm -rf gale",
+            "yarn dlx rimraf gale",
+            "go run ./tools/gen -o gale/.github/actions/x/action.yml",
             "pip install --target gale/vendor -r requirements.txt",
         ] {
             assert!(w(s), "missed: {s:?}");
@@ -2534,6 +2636,27 @@ mod tests {
             "gale"
         ));
         assert!(!may_write("mkdir -p /tmp/out", &[], "gale", "gale"));
+        assert!(may_write("tar -xzf /tmp/x.tgz", &[], "gale", "gale"));
+        assert!(may_write("unzip /tmp/x.zip", &[], "gale", "gale"));
+        assert!(may_write(
+            "curl -sSfLO https://example.com/a.yml",
+            &[],
+            "gale",
+            "gale"
+        ));
+        assert!(may_write(
+            "git clone https://example.com/x.git",
+            &[],
+            "gale",
+            "gale"
+        ));
+        assert!(may_write(
+            "python3 -m mytool --write gale/action.yml",
+            &[],
+            "",
+            "gale"
+        ));
+        assert!(!may_write("npm run build", &[], "", "gale"));
         assert!(!may_write(
             "cmake -B build && cmake --build build",
             &[],

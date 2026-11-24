@@ -185,7 +185,11 @@ the path or runs in it. A writer's name as a mere argument (`grep -q zip`,
 `west sdk install`) is not a writer; a writer word after an unknown command (`with-device rm`)
 counts when a later word names the path outright. Any tool's output flag
 (`-o`, `--output`, `--target`, `--prefix`, `--dest`, ...) naming the path
-outright counts (`ncc build -o p/dist`). A step whose shell is not bash or sh
+outright counts (`ncc build -o p/dist`). A build directory (`--build-dir`, `cmake -B`) is
+a program's own output, not an output flag. Data tools that run another
+command (`npm exec`, `yarn dlx`, `go run`, `bazel run`) are scanned like
+wrappers. A cwd in the path counts for extractors, clones and downloads
+without an output flag, and for any writer with a relative operand. A step whose shell is not bash or sh
 (`shell: pwsh`, or a Windows runner without `shell:`) is not parsed: any
 mention of the path counts; a `runs-on` expression applies both. The path is named: literally,
 through a variable assigned a path naming it (step, job or workflow `env:`,
