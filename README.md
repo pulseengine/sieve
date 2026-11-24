@@ -194,7 +194,12 @@ writer, `sh -c` and `eval` code, inline interpreter code naming the path, and
 an unparseable script (an unclosed quote, substitution or here-document)
 count as a rewrite; a source path counts like a destination. A program that
 writes into the path on its own (`make`, `cargo`, `west`, `source x.sh`) is
-not seen. Only the linter names above are detected: any other check that reads
+not seen. The scanner is built for honest scripts and fails closed on
+what it cannot place; it is not a sandbox. A rewrite hidden on purpose (a
+program or a downloaded script that writes the path, or code assembled at run
+time) is not seen, the same limit as a program that writes on its own. The
+workflow edit that adds such a step is itself scoped to the job it edits, so
+that job runs on that pull request. Only the linter names above are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.
