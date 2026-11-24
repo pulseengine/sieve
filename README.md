@@ -263,6 +263,60 @@ counted as zero. `merge_queue` decides `skipped_jobs_run_before_merge`.
 Without a merge queue, a skipped job first runs after the merge, on push to
 main.
 
+## Drift under churn (REQ-037)
+
+A sieve.toml drifts two ways as the tree changes. Too narrow: a path moves
+or a job starts reading a path its class does not claim, and a job can be
+skipped. Too wide: every PR fails open to run_all, nothing goes red, and the
+saving disappears unseen. Three pieces of adopter wiring catch both; none
+needs new sieve logic. They assume `sieve` is on PATH (the varve layer or a
+verified release archive).
+
+1. A weekly `check-graph` on the default branch. It fails on any refusal,
+   including a claim that no longer matches a tracked file and a manifest
+   that is gone, so moving a claimed directory without updating sieve.toml
+   turns it red within one run (control:
+   `moving_a_claimed_directory_turns_the_scheduled_check_graph_red`).
+
+   ```yaml
+   on:
+     schedule: [{cron: "17 5 * * 1"}]
+     workflow_dispatch:
+   permissions: {contents: read}
+   jobs:
+     drift:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+         - run: sieve check-graph --config sieve.toml
+   ```
+
+   It is not a required check: a schedule has no PR to gate, so a red run is
+   read from the Actions tab or a notification, not from a merge block.
+
+2. `sieve observe` on the full runs on main (and in the merge queue, where
+   there is one), as in [Counting observed misses](#counting-observed-misses).
+   A rising m of N is the too-narrow signal in the field.
+
+3. A weekly replay of the last N merged PRs, which reports how many would
+   have skipped anything and why the rest ran everything:
+
+   ```sh
+   gh pr list --state merged --limit 50 --json number,baseRefOid,mergeCommit \
+     -q '.[]|"\(.number) \(.baseRefOid) \(.mergeCommit.oid)"' |
+   while read -r n base head; do
+     sieve classify --config sieve.toml --event pull_request \
+       --base "$base" --head "$head" --format json --explain > "pr-$n.json"
+   done
+   jq -s 'map(select(.run_all)) | length' pr-*.json        # PRs that ran everything
+   jq -s '[.[] | select(.run_all) | .reason // "none" | split(":")[0]] | group_by(.) | map({reason: .[0], n: length})' pr-*.json
+   ```
+
+   The fraction that ran everything is the too-wide signal; a drift towards
+   all of them shows up as a number instead of as nothing. The base must be
+   in the clone (fetch with enough depth), or classify fails open, which the
+   replay counts as run_all.
+
 ## Verification
 
 `tests/corpus/` is the language-neutral classifier corpus from gale
