@@ -174,7 +174,9 @@ a checkout sieve cannot model (a fork, an expression or `..` path), a linter job
 `if:` that is not the classifier form, or a linter step behind its own
 step-level gate makes the edit run everything. Remote actions and remote
 reusable workflows are not inlined. A step that rewrites the workspace root (a `git
-checkout` of another ref before a local `uses:`) is not detected. Only those names are detected: any other check that reads
+checkout` of another ref before a local `uses:`) is not detected. An action
+input that rewrites a checked-out path is seen only when its key is
+path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). Only those names are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.

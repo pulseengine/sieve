@@ -1422,8 +1422,9 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
     let mut paths: BTreeMap<String, bool> = BTreeMap::new();
     let mut unknown = false;
     let touches = Regex::new(r"\b(git|rm|mv|cp|tar|curl|wget|rsync|unzip)\b").unwrap();
+    let drive = Regex::new(r"^([A-Za-z]:|//)").unwrap();
     let path_key = Regex::new(
-        r"(?i)^(path|paths|dest|destination|dir|directory|target|target-dir|working-directory|output|out|into|location)$",
+        r"(?i)^(path|paths|dest|destination|dir|directory|target|working-directory|output|out|into|location|cwd|folder|root)$|-(dir|path|paths|directory|folder|root)$",
     )
     .unwrap();
     for st in list(get(job, "steps")) {
@@ -1439,7 +1440,7 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
             let mut seen_keys = BTreeSet::new();
             if entries(with)
                 .into_iter()
-                .any(|(k, _)| !seen_keys.insert(k.to_ascii_lowercase()))
+                .any(|(k, _)| !k.is_ascii() || !seen_keys.insert(k.to_ascii_lowercase()))
             {
                 unknown = true;
             }
@@ -1516,20 +1517,28 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
         // workspace root is not tracked this way: a step that rewrites the
         // root is a limit for every local `uses:`.)
         let unplaceable = |v: &str| {
+            let v = v.trim().replace('\\', "/");
             v.contains("${")
                 || v.split('/').any(|c| c == "..")
-                || v.trim().starts_with('/')
-                || (v.trim().starts_with('~') && !v.trim().starts_with("~/."))
+                || v.starts_with('/')
+                || drive.is_match(&v)
+                || (v.starts_with('~') && !v.starts_with("~/."))
         };
         // `v` (one path per line) at or under `p`; for a path-like input also
         // above it (`.` or a parent replaces it too)
         let hits = |v: &str, p: &str, pathlike: bool| {
             v.lines().filter(|l| !l.trim().is_empty()).any(|l| {
+                // `\` separates on Windows runners; macOS and Windows paths
+                // ignore case
                 let l = norm(
-                    l.trim()
+                    &l.trim()
+                        .replace('\\', "/")
                         .trim_start_matches("$GITHUB_WORKSPACE")
-                        .trim_start_matches('/'),
+                        .trim_start_matches('/')
+                        .to_lowercase(),
                 );
+                let p = p.to_lowercase();
+                let p = p.as_str();
                 l == p
                     || l.starts_with(&format!("{p}/"))
                     || (pathlike && (l.is_empty() || p.starts_with(&format!("{l}/"))))
@@ -1544,7 +1553,12 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
                     let blind = !wd.is_empty() && unplaceable(&wd);
                     for (p, same) in paths.iter_mut() {
                         if !p.is_empty()
-                            && (blind || run.contains(p.as_str()) || hits(&wd, p, true))
+                            && (blind
+                                || run
+                                    .to_lowercase()
+                                    .replace('\\', "/")
+                                    .contains(&p.to_lowercase())
+                                || hits(&wd, p, true))
                         {
                             *same = false;
                         }
@@ -1554,7 +1568,7 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
             if !action.is_empty() {
                 for (k, v) in entries(get(st, "with")) {
                     let v = py_str(v);
-                    let pathlike = path_key.is_match(&k);
+                    let pathlike = path_key.is_match(&k.replace('_', "-"));
                     let blind = pathlike && v.lines().any(unplaceable);
                     for (p, same) in paths.iter_mut() {
                         if !p.is_empty() && (blind || hits(&v, p, pathlike)) {

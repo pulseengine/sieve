@@ -1461,3 +1461,26 @@ fn checkout_resolution_sees_defaults_parents_and_duplicate_inputs() {
     }
     assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
 }
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_handles_case_backslashes_and_more_path_keys() {
+    let cases = [
+        ("i36e-backslash", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: 'GALE\\sub'\n{USE_RENODE}")),
+        ("i36e-drive", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: 'C:\\w'\n{USE_RENODE}")),
+        ("i36e-cwd-key", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          cwd: .\n{USE_RENODE}")),
+        ("i36e-suffix-key", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          extract_dir: .\n{USE_RENODE}")),
+        ("i36e-run-case", format!("{CHECKOUT_GALE}      - run: rm -rf GALE\n{USE_RENODE}")),
+    ];
+    let mut bad = vec![];
+    for (name, steps) in cases {
+        let v = renode_case(name, &steps);
+        if v["run_all"] != true {
+            bad.push(format!(
+                "{name}: run_all={} reason={:?}",
+                v["run_all"], v["reason"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
