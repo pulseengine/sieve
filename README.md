@@ -176,15 +176,21 @@ reusable workflows are not inlined. A step that rewrites the workspace root (a `
 checkout` of another ref before a local `uses:`) is not detected. An action
 input that rewrites a checked-out path is seen only when its key is
 path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). A later `run:` step rewrites the path
-when one of its commands writes (git, rm, mv, cp, tar, rsync, curl, ... ,
-`sed -i`, a redirection) and names it: literally, through a variable
-assigned a path naming it (step, job or workflow `env:` or the script), or
-by running in it (`cd`, `working-directory:`); shell comments, reads
-(`grep`, `-s "$GALE_ROOT"`) and other words do not count (sieve#41). An
-unassigned variable, an expression or `~` in a written path, a `cd` to one,
-`xargs` feeding a writer, inline interpreter code naming the path and an
-unparseable script count as a rewrite. A program that writes into the path on
-its own (`make`, `west`, a script) is not seen. Only the linter names above are detected: any other check that reads
+when one of its commands holds a writer (git other than its read-only
+subcommands, rm, mv, cp, tar, rsync, curl, docker, ..., an in-place `sed`,
+`perl`, `yq` or `awk`, `sort -o`, a redirection; anywhere in the command, so
+`sudo -u x rm` and function bodies count) and names the path: literally,
+through a variable assigned a path naming it (step, job or workflow `env:`,
+the script, a `for` loop, an array, an expansion operand), or by running in
+it (`cd`, `working-directory:`). Shell comments, reads (`grep`, `cat`,
+`-s "$GALE_ROOT"`), branch names and `gh -R owner/repo` do not count
+(sieve#41). An unassigned or indirect variable, an expression or `~` in a
+written path, a `cd` to one, code piped into a shell, `xargs` feeding a
+writer, `sh -c` and `eval` code, inline interpreter code naming the path, and
+an unparseable script (an unclosed quote, substitution or here-document)
+count as a rewrite; a source path counts like a destination. A program that
+writes into the path on its own (`make`, `cargo`, `west`, `source x.sh`) is
+not seen. Only the linter names above are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.

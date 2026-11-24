@@ -728,21 +728,24 @@ artifacts:
     description: >
       sieve#41. For a local uses: resolved through an earlier same-repository
       actions/checkout path (sieve#36), a later run: step distrusts that path
-      only when one of its simple commands writes (git, rm, mv, cp, tar,
-      rsync, curl and other file commands, sed -i, perl -i, a find that
-      deletes or executes, a redirection) and names the path: literally as a
-      path component, through a variable assigned a path naming it (workflow,
-      job or step env:, or the script, including a for loop), or by running in
-      it (cd, pushd, working-directory:, defaults). Shell comments, reads,
-      branch names and other words do not count. Fails closed: an unassigned
-      variable, an expression or ~ in a written path, a cd to one, xargs
-      feeding a writer, sh -c and eval (parsed as scripts), inline interpreter
-      code naming the path, and an unparseable script count as a rewrite.
-      A program that writes into the path on its own is not seen, as before.
+      only when one of its simple commands holds a writer anywhere in it (file
+      and git commands other than read-only git subcommands, in-place sed,
+      perl, yq or awk, sort -o, a find that deletes or executes, a
+      redirection) and names the path: literally as a path component, through
+      a variable assigned a path naming it (workflow, job or step env:, the
+      script, a for loop, an array, an expansion operand), or by running in it
+      (cd, pushd, working-directory:, defaults). Shell comments, reads, branch
+      names and other words do not count. Fails closed: an unassigned or
+      indirect variable, an expression or ~ in a written path, a cd to one, a
+      command name in an unknown variable naming the path, code piped into a
+      shell, xargs or parallel feeding a writer, sh -c and eval (parsed as
+      scripts), inline interpreter code naming the path, and an unparseable
+      script (unclosed quote, substitution or here-document) count as a
+      rewrite. A program that writes into the path on its own is not seen.
     fields:
       priority: should
       category: functional
-      review: author-verified only (src/runscan.rs unit tests, tests/leaf_scope.rs; always-true and always-false mutants killed); no independent review yet
+      review: fresh-context adversarial review 2026-11-25 of 7206093 reproduced 21 findings (11 regressions, 5 gaps, 1 hang, false refusals); all fixed with unit controls; always-true and always-false mutants killed; gale L18 probe 74/82, no false skip
     links:
       - {type: constraint-satisfies, target: SC-006}
       - {type: derives-from, target: REQ-035}
