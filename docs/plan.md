@@ -223,3 +223,25 @@ Two check fixes found by relay on its v0.4.1 pilot (#34):
 
 No change to classify. Evidence: a control for each, failing with the change
 reverted; fmt, clippy and the full suite on the PR head and on main.
+
+## v0.4.3 (prepared 2026-11-24)
+
+Two classify fixes for gale's L18 lane (#38):
+- sieve#36: a local `uses: ./<p>/...` is resolved through an earlier
+  same-repo `actions/checkout` with `path: <p>`, so linter-class selection
+  and per-job scoping see the real action file. The checkout path is
+  modelled only when it is plain (no `${{`, `\` or `..`), has no `ref:`,
+  names no other repository, and no later step can rewrite it (a run step
+  touching `<p>`, a working-directory under or above it, or a path-like
+  action input that names it or cannot be placed). Anything else, and any
+  `..` in a local `uses:`, leaves the reference unresolved, which runs
+  every class (control: an unresolvable local reference still runs
+  everything);
+- sieve#37: a job reads `needs` only inside `${{ }}` or an `if:` value; a
+  run script mentioning the word no longer refuses scoping. An unclosed
+  expression still counts as a read.
+
+Evidence: a control for each refusal, failing with its check reverted; a
+fresh-context review (clean at f2e0f8c) and automated security review on every push,
+each confirmed finding fixed with its own control; fmt, clippy and the full
+suite on the PR head 54ca189 and on main cc3e431.
