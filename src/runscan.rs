@@ -1210,13 +1210,12 @@ impl Scan {
                     let mut t = match git_sub(raw).as_deref() {
                         // refs and remotes, not work-tree paths; a local
                         // path remote and a config file are paths
-                        Some(
-                            "fetch" | "push" | "remote" | "tag" | "notes" | "config" | "branch",
-                        ) if !risky && !git_env => {
-                            let mut t = values(
-                                k,
-                                &["-C", "--git-dir", "--work-tree", "-f", "--file", "--blob"],
-                            );
+                        // (`git config` is not narrowed: a key it sets may run code)
+                        Some(sub @ ("fetch" | "push" | "remote" | "tag" | "notes" | "branch"))
+                            if !risky && !git_env =>
+                        {
+                            let mut t = values(k, &["-C", "--git-dir", "--work-tree"]);
+                            // path-shaped operands anywhere
                             t.extend(
                                 raw.iter()
                                     .filter(|a| {
@@ -1229,6 +1228,18 @@ impl Scan {
                                     })
                                     .cloned(),
                             );
+                            // the remote of fetch/push (the first operand after
+                            // the subcommand) may be a local path; later
+                            // operands are refspecs
+                            if matches!(sub, "fetch" | "push") {
+                                let after: Vec<&String> = raw
+                                    .iter()
+                                    .skip_while(|a| a.as_str() != sub)
+                                    .skip(1)
+                                    .filter(|a| !a.starts_with('-'))
+                                    .collect();
+                                t.extend(after.first().map(|s| s.to_string()));
+                            }
                             t
                         }
                         _ => all(k),
@@ -1470,14 +1481,25 @@ impl Scan {
                 let rest = &w[k + 1..];
                 // wrappers that run a string as shell code
                 if matches!(b.as_str(), "su" | "runuser" | "flock" | "sudo") {
-                    if let Some(c) = rest.iter().position(|a| a == "-c" || a == "--command") {
-                        match rest.get(c + 1) {
-                            Some(code) => hit |= self.script(code, depth),
-                            None => hit = true,
+                    // every `-c`, a short cluster holding c (`-lc`),
+                    // `--command`, `--session-command`
+                    for (j, a) in rest.iter().enumerate() {
+                        let cluster = a.starts_with('-')
+                            && !a.starts_with("--")
+                            && a.len() > 1
+                            && a[1..].chars().all(|x| x.is_ascii_alphabetic())
+                            && a.contains('c');
+                        if cluster || a == "--command" || a == "--session-command" {
+                            match rest.get(j + 1) {
+                                Some(code) => hit |= self.script(code, depth),
+                                None => hit = true,
+                            }
                         }
-                    }
-                    for a in rest.iter().filter_map(|a| a.strip_prefix("--command=")) {
-                        hit |= self.script(a, depth);
+                        for f in ["--command=", "--session-command="] {
+                            if let Some(code) = a.strip_prefix(f) {
+                                hit |= self.script(code, depth);
+                            }
+                        }
                     }
                 }
                 if b == "watch" {
@@ -2011,6 +2033,13 @@ mod tests {
             "runuser -u runner -- bash -c 'rm -rf gale'",
             "flock /tmp/l -c 'rm -rf gale'",
             "watch -n1 rm -rf gale",
+            // commit security review of a5a3bdd
+            "git push gale HEAD:main",
+            "git fetch gale",
+            "git config core.fsmonitor 'rm -rf gale'",
+            "su -lc 'rm -rf gale' runner",
+            "su --session-command='rm -rf gale' runner",
+            "su -c 'echo' -c 'rm -rf gale' runner",
         ] {
             assert!(w(s), "missed: {s:?}");
         }
