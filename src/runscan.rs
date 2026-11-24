@@ -1480,24 +1480,67 @@ impl Scan {
                 let b = basename(&nw[k]);
                 let rest = &w[k + 1..];
                 // wrappers that run a string as shell code
-                if matches!(b.as_str(), "su" | "runuser" | "flock" | "sudo") {
+                if matches!(b.as_str(), "su" | "runuser" | "flock") {
                     // every `-c`, a short cluster holding c (`-lc`),
                     // `--command`, `--session-command`
                     for (j, a) in rest.iter().enumerate() {
-                        let cluster = a.starts_with('-')
-                            && !a.starts_with("--")
-                            && a.len() > 1
-                            && a[1..].chars().all(|x| x.is_ascii_alphabetic())
-                            && a.contains('c');
-                        if cluster || a == "--command" || a == "--session-command" {
-                            match rest.get(j + 1) {
-                                Some(code) => hit |= self.script(code, depth),
-                                None => hit = true,
+                        let next = |hit: &mut bool, s: &mut Self| match rest.get(j + 1) {
+                            Some(code) => *hit |= s.script(code, depth),
+                            None => *hit = true,
+                        };
+                        if let Some(long) = a.strip_prefix("--") {
+                            // getopt_long takes any unambiguous prefix; an
+                            // unrecognised long option fails closed
+                            let (opt, val) = match long.split_once('=') {
+                                Some((o, v)) => (o, Some(v)),
+                                None => (long, None),
+                            };
+                            let code_opt = !opt.is_empty()
+                                && ("command".starts_with(opt)
+                                    || "session-command".starts_with(opt));
+                            let known = matches!(
+                                opt,
+                                "login"
+                                    | "preserve-environment"
+                                    | "user"
+                                    | "group"
+                                    | "supp-group"
+                                    | "shell"
+                                    | "pty"
+                                    | "whitelist-environment"
+                                    | "shared"
+                                    | "exclusive"
+                                    | "unlock"
+                                    | "nonblock"
+                                    | "nb"
+                                    | "timeout"
+                                    | "wait"
+                                    | "conflict-exit-code"
+                                    | "close"
+                                    | "verbose"
+                                    | "no-fork"
+                                    | "fcntl"
+                                    | "help"
+                                    | "version"
+                            );
+                            if code_opt {
+                                match val {
+                                    Some(v) => hit |= self.script(v, depth),
+                                    None => next(&mut hit, self),
+                                }
+                            } else if !known && !opt.is_empty() {
+                                hit = true;
                             }
-                        }
-                        for f in ["--command=", "--session-command="] {
-                            if let Some(code) = a.strip_prefix(f) {
-                                hit |= self.script(code, depth);
+                        } else if a.starts_with('-') && a.len() > 1 {
+                            // a short cluster: after `c`, the rest of the word
+                            // is the code, or else the next word
+                            if let Some(pos) = a[1..].find('c') {
+                                let after = &a[1 + pos + 1..];
+                                if after.is_empty() {
+                                    next(&mut hit, self);
+                                } else {
+                                    hit |= self.script(after, depth);
+                                }
                             }
                         }
                     }
@@ -1877,6 +1920,8 @@ mod tests {
             "cat data.json | python3 tools/check.py",
             "git -C gale log --oneline -1",
             "git fetch origin gale/feature",
+            "sudo --preserve-env=PATH apt-get install -y curl",
+            "su runner -l --shell=/bin/bash -c 'echo ok'",
             "west sdk install -t arm-zephyr-eabi --personal-access-token \"${GITHUB_TOKEN}\"",
             "grep -q zip gale/Cargo.toml",
             "rg install gale/src",
@@ -2040,6 +2085,12 @@ mod tests {
             "su -lc 'rm -rf gale' runner",
             "su --session-command='rm -rf gale' runner",
             "su -c 'echo' -c 'rm -rf gale' runner",
+            // commit security review of 05fd311
+            "su -c'rm -rf gale' runner",
+            "su -lc'rm -rf gale' runner",
+            "su --com 'rm -rf gale' runner",
+            "su --sess='rm -rf gale' runner",
+            "runuser --frobnicate=x -u runner true",
         ] {
             assert!(w(s), "missed: {s:?}");
         }
