@@ -1484,3 +1484,13 @@ fn checkout_resolution_handles_case_backslashes_and_more_path_keys() {
     }
     assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
 }
+
+// rivet: verifies REQ-035
+#[test]
+fn a_checkout_path_with_a_backslash_is_not_modelled() {
+    let steps = format!(
+        "      - uses: actions/checkout@v4\n        with:\n          path: 'x\\gale'\n      - run: rm -rf x/gale\n{USE_RENODE}"
+    );
+    let v = renode_case("i36f-backslash-path", &steps);
+    assert_run_all(&v, "cannot model");
+}

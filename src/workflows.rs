@@ -1450,7 +1450,7 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
                 .map(py_str)
                 .unwrap_or_default();
             let repo = with.and_then(|w| get_ci(w, "repository")).map(py_str);
-            if path.contains("${{") || path.split('/').any(|c| c == "..") {
+            if path.contains("${{") || path.contains('\\') || path.split('/').any(|c| c == "..") {
                 unknown = true;
             }
             // another ref of this repository puts other action code there
