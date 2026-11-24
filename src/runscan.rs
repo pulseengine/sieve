@@ -581,8 +581,6 @@ fn is_writer(name: &str) -> bool {
             | "tee"
             | "dd"
             | "truncate"
-            | "chmod"
-            | "chown"
             | "shred"
             | "split"
             | "csplit"
@@ -665,10 +663,25 @@ fn is_reader(cmd: &[String]) -> bool {
 
 /// git's subcommand after its global options (`-C x`, `-c k=v`).
 fn git_sub(args: &[String]) -> Option<String> {
+    git_sub_at(args).map(|i| args[i].to_ascii_lowercase())
+}
+
+/// The index of git's subcommand in `args`.
+fn git_sub_at(args: &[String]) -> Option<usize> {
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
-        if matches!(a, "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace") {
+        if matches!(
+            a,
+            "-C" | "-c"
+                | "--git-dir"
+                | "--work-tree"
+                | "--namespace"
+                | "--exec-path"
+                | "--config-env"
+                | "--super-prefix"
+                | "--list-cmds"
+        ) {
             i += 2;
             continue;
         }
@@ -676,9 +689,29 @@ fn git_sub(args: &[String]) -> Option<String> {
             i += 1;
             continue;
         }
-        return Some(a.to_ascii_lowercase());
+        return Some(i);
     }
     None
+}
+
+/// A docker `-v` spec ending in an `ro` mode, or a `--mount` spec with
+/// `readonly`/`ro` set to nothing, `true` or `1`.
+fn mount_read_only(spec: &str) -> bool {
+    let s = spec.to_ascii_lowercase();
+    if s.contains("type=")
+        || s.contains("source=")
+        || s.contains("src=")
+        || s.contains("target=")
+        || s.contains("dst=")
+    {
+        return s.split(',').any(|kv| {
+            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+            matches!(k.trim(), "readonly" | "ro") && matches!(v.trim(), "" | "true" | "1")
+        });
+    }
+    // `-v src:dst:opts`: the third field's comma-separated modes
+    let parts: Vec<&str> = s.split(':').collect();
+    parts.len() >= 3 && parts[parts.len() - 1].split(',').any(|m| m == "ro")
 }
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "busybox"];
@@ -740,7 +773,28 @@ fn real_cmd(words: &[String], h: usize) -> Option<usize> {
             return Some(i);
         }
         let takes: &[&str] = match b.as_str() {
-            "sudo" | "doas" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"],
+            "sudo" | "doas" => &[
+                "-u",
+                "-g",
+                "-C",
+                "-D",
+                "-h",
+                "-p",
+                "-r",
+                "-t",
+                "-U",
+                "-T",
+                "--user",
+                "--group",
+                "--chdir",
+                "--role",
+                "--type",
+                "--other-user",
+                "--host",
+                "--prompt",
+                "--close-from",
+                "--command-timeout",
+            ],
             "timeout" => &["-s", "-k", "--signal", "--kill-after"],
             "env" => &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
             "nice" => &["-n", "--adjustment"],
@@ -1028,13 +1082,20 @@ impl Scan {
                             let after = &hay[c.get(0).unwrap().end()..];
                             after.strip_prefix('/').is_some_and(|r| {
                                 let first = r.split(['/', ' ', '"', '\'']).next().unwrap_or("");
-                                !first.is_empty()
-                                    && !matches!(
-                                        first.to_ascii_lowercase().as_str(),
-                                        "work" | "_work" | "actions-runner" | "runner" | "runners"
+                                // dot directories and tool directories only
+                                (first.starts_with('.') && first != "." && first != "..")
+                                    || matches!(
+                                        first,
+                                        "bin"
+                                            | "tools"
+                                            | "go"
+                                            | "sdk"
+                                            | "opt"
+                                            | "lib"
+                                            | "include"
+                                            | "share"
+                                            | "Library"
                                     )
-                                    && !first.starts_with('$')
-                                    && !first.contains(['*', '?', '['])
                             })
                         } =>
                     {
@@ -1072,6 +1133,14 @@ impl Scan {
     /// or above `p`.
     fn word_hits(&self, word: &str) -> bool {
         let n = self.normalize(word);
+        // an option is not a path; its `=value` may be (`--target=p`). The
+        // name `p` inside an option word still counts (`-Cp`).
+        if n.starts_with('-') {
+            return n.contains(TAINT)
+                || n.contains(UNKNOWN)
+                || self.aligned(&n)
+                || n.split_once('=').is_some_and(|(_, t)| self.seg_hits(t));
+        }
         let mut segs = vec![n.clone()];
         if let Some((_, tail)) = n.split_once('=') {
             segs.push(tail.to_string());
@@ -1132,6 +1201,46 @@ impl Scan {
                         }
                         _ => false,
                     }))
+        })
+    }
+
+    /// A target that is a path relative to the cwd (not an option, an
+    /// absolute or outside path, a URL or an opaque value).
+    fn relative_target(&self, word: &str) -> bool {
+        let n = self.normalize(word);
+        static URL: OnceLock<Regex> = OnceLock::new();
+        let url = re(&URL, r"^[a-z][a-z0-9+.-]*://|^[\w.-]+@[\w.-]+:");
+        !(n.is_empty()
+            || n.starts_with(['-', '+', '/', ROOT, OUTSIDE, OPAQUE])
+            || url.is_match(&n)
+            || n.chars().all(|c| c.is_ascii_digit()))
+    }
+
+    /// An output flag (`-o`, `--output`, `--out-dir`, `--target`, `--prefix`,
+    /// `--dest`, ...) whose value names `p` outright: a tool writing its
+    /// output into the checkout (`ncc build -o p/dist`, `go build -o p/bin`).
+    fn output_flag_names_p(&self, words: &[String]) -> bool {
+        const FLAGS: &[&str] = &[
+            "-o",
+            "--output",
+            "--out",
+            "--out-dir",
+            "--outdir",
+            "--output-dir",
+            "--target",
+            "--target-dir",
+            "--prefix",
+            "--dest",
+            "--destination",
+            "--install-dir",
+            "--root",
+        ];
+        words.iter().enumerate().any(|(i, a)| {
+            FLAGS.iter().any(|f| {
+                (a == f && words.get(i + 1).is_some_and(|v| self.names_outright(v)))
+                    || a.strip_prefix(&format!("{f}="))
+                        .is_some_and(|v| self.names_outright(v))
+            })
         })
     }
 
@@ -1214,7 +1323,8 @@ impl Scan {
     /// `heads` are the command-name positions: the name, or every word after
     /// a wrapper (whose own options cannot be told from the command).
     fn writer_targets(&self, w: &[String], nw: &[String], heads: &[usize]) -> Option<Vec<String>> {
-        let all = |k: usize| w[k..].to_vec();
+        // the arguments after the writer's name
+        let all = |k: usize| w[k + 1..].to_vec();
         // values of `flags` (`-B dir`, `--prefix=dir`)
         let values = |k: usize, flags: &[&str]| -> Vec<String> {
             let mut out = Vec::new();
@@ -1385,7 +1495,8 @@ impl Scan {
                 {
                     Some(all(k))
                 }
-                "openssl" if rest.iter().any(|a| a == "-out") => Some(all(k)),
+                // openssl writes through -out, -keyout, -CAserial, -sigout, ...
+                "openssl" => Some(all(k)),
                 "sort"
                     if rest
                         .iter()
@@ -1433,26 +1544,9 @@ impl Scan {
                 }
                 // cmake writes its build and install trees (the cwd without
                 // -B), or anything under -E
-                "cmake" => Some(if rest.iter().any(|a| a == "-e") {
-                    all(k)
-                } else {
-                    let mut t = values(k, &["-B", "--build", "--prefix", "--install-prefix"]);
-                    // `-D NAME=v` as two words
-                    t.extend(
-                        raw.windows(2)
-                            .filter(|p| p[0] == "-D" && p[1].starts_with("CMAKE_"))
-                            .filter_map(|p| p[1].split_once('=').map(|(_, v)| v.to_string())),
-                    );
-                    t.extend(raw.iter().filter_map(|a| {
-                        a.strip_prefix("-D")
-                            .filter(|d| {
-                                d.starts_with("CMAKE_")
-                                    && (d.contains("_DIR") || d.contains("PREFIX"))
-                            })
-                            .and_then(|d| d.split_once('=').map(|(_, v)| v.to_string()))
-                    }));
-                    t
-                }),
+                // cmake writes under -E; its build and install trees are a
+                // program's own output (the documented limit, like cargo)
+                "cmake" if rest.iter().any(|a| a == "-e") => Some(all(k)),
                 // docker and podman write through cp, mounts and exports;
                 // build only reads its context
                 "docker" | "podman" | "nerdctl"
@@ -1471,19 +1565,7 @@ impl Scan {
                         && rest.iter().any(|a| a.starts_with("--output") || a == "-o")) =>
                 {
                     // a read-only mount (`:ro`, `readonly`) writes nothing
-                    Some(
-                        all(k)
-                            .into_iter()
-                            .filter(|a| {
-                                let l = a.to_ascii_lowercase();
-                                !(l.ends_with(":ro")
-                                    || l.contains(":ro,")
-                                    || l.contains(",readonly")
-                                    || l.contains(",ro,")
-                                    || l.ends_with(",ro"))
-                            })
-                            .collect(),
-                    )
+                    Some(all(k).into_iter().filter(|a| !mount_read_only(a)).collect())
                 }
                 _ => None,
             };
@@ -1601,7 +1683,10 @@ impl Scan {
             let rname = real.map(|r| basename(&nw[r])).unwrap_or_default();
             let heads: Vec<usize> = real.into_iter().collect();
             // an unknown command may run its later words as a command
-            let open = !treats_args_as_data(&rname);
+            // (interpreters and shells have their own handling above)
+            let open = !treats_args_as_data(&rname)
+                && !is_interpreter(&rname)
+                && !SHELLS.contains(&rname.as_str());
             // a shell, eval or interpreter at a command position: its code runs
             // here (the first one only; nested ones are in its code)
             // `env X=v cmd`, `sudo X=v cmd`: assignments after a wrapper
@@ -1734,7 +1819,14 @@ impl Scan {
                 if is_interpreter(&b) {
                     // inline code, or code on stdin, here-documents and
                     // process substitutions: anything but a script file
-                    if !script_file(rest) || has_inline(rest) {
+                    // `python -m mod` runs a module, like a script file
+                    let module = rest
+                        .iter()
+                        .take_while(|a| a.starts_with('-'))
+                        .any(|a| a == "-m");
+                    // (with -m the words after the module are its arguments)
+                    let inline = !module && has_inline(rest);
+                    if (!script_file(rest) && !module) || inline {
                         for a in rest {
                             hit |= self.code_hits(a);
                         }
@@ -1752,8 +1844,21 @@ impl Scan {
                     hit = true;
                 }
             }
+            // a tool's output flag naming `p` (any command but those that
+            // only print)
+            if !matches!(
+                rname.as_str(),
+                "echo" | "printf" | "grep" | "egrep" | "fgrep" | "rg" | "ag" | "sort"
+            ) && self.output_flag_names_p(&w[h..])
+            {
+                hit = true;
+            }
             if let Some(targets) = self.writer_targets(w, &nw, &heads) {
-                if self.in_p() || targets.iter().any(|a| self.word_hits(a)) {
+                // a cwd in `p` counts for relative targets (or none), not for
+                // absolute ones outside (`curl -o /tmp/x`)
+                let relative =
+                    targets.is_empty() || targets.iter().any(|a| self.relative_target(a));
+                if (self.in_p() && relative) || targets.iter().any(|a| self.word_hits(a)) {
                     hit = true;
                 }
             } else if heads
@@ -1766,7 +1871,7 @@ impl Scan {
                 if self.in_p() || w[h..].iter().any(|a| self.names_outright(a)) {
                     hit = true;
                 }
-            } else if let (true, Some(r)) = (open, real) {
+            } else if let (true, Some(r)) = (open || is_wrapper(&name), real) {
                 // an unknown wrapper (`with-device rm -rf p`, `pnpm exec $RM
                 // -rf p`): a later writer word, or a later name sieve cannot
                 // resolve, with a word that names `p` outright (not merely an
@@ -1776,7 +1881,9 @@ impl Scan {
                     .iter()
                     .any(|&k| nw[k].contains(UNKNOWN) || w[k].contains("$(") || w[k].contains('`'));
                 if let Some(targets) = self.writer_targets(w, &nw, &later) {
-                    if self.in_p() || targets.iter().any(|a| self.names_outright(a)) {
+                    let relative =
+                        targets.is_empty() || targets.iter().any(|a| self.relative_target(a));
+                    if (self.in_p() && relative) || targets.iter().any(|a| self.names_outright(a)) {
                         hit = true;
                     }
                 } else if unresolved && w[r..].iter().any(|a| self.names_outright(a)) {
@@ -1831,6 +1938,22 @@ fn treats_args_as_data(name: &str) -> bool {
     matches!(
         name,
         "echo"
+            | "pytest"
+            | "ctest"
+            | "go"
+            | "npm"
+            | "yarn"
+            | "tox"
+            | "nox"
+            | "bazel"
+            | "bazelisk"
+            | "gradle"
+            | "mvn"
+            | "dotnet"
+            | "swift"
+            | "cargo-nextest"
+            | "just"
+            | "task"
             | "printf"
             | "grep"
             | "egrep"
@@ -1941,10 +2064,7 @@ fn git_read_only(args: &[String]) -> bool {
         return false;
     }
     // global options before the subcommand, its own after it
-    let at = args
-        .iter()
-        .position(|a| a.to_ascii_lowercase() == sub)
-        .unwrap_or(args.len());
+    let at = git_sub_at(args).unwrap_or(args.len());
     let (global, own) = args.split_at(at);
     let global_risky = global.iter().any(|a| {
         matches!(a.as_str(), "-c" | "-p" | "--paginate")
@@ -2064,6 +2184,79 @@ pub fn may_write(script: &str, env: &[(String, String)], wd: &str, p: &str) -> b
     s.cmds(&cmds, 0)
 }
 
+/// The shell a `run:` step runs in, as far as sieve can tell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shell {
+    /// bash or sh: the script is parsed
+    Posix,
+    /// PowerShell, cmd, python or another interpreter: not parsed
+    Other,
+    /// not known (a `runs-on` expression): both checks apply
+    Unknown,
+}
+
+/// `shell:` (step, job or workflow default) and `runs-on` to a [`Shell`]:
+/// an explicit shell wins; without one, Windows runners use PowerShell.
+pub fn shell_of(explicit: Option<&str>, runs_on: &str) -> Shell {
+    if let Some(s) = explicit {
+        let s = s.trim().to_ascii_lowercase();
+        if s.contains("${{") {
+            return Shell::Unknown;
+        }
+        let first = s.split_whitespace().next().unwrap_or("");
+        let first = first.rsplit('/').next().unwrap_or(first);
+        return if matches!(first, "bash" | "sh") {
+            Shell::Posix
+        } else {
+            Shell::Other
+        };
+    }
+    let r = runs_on.to_ascii_lowercase();
+    if r.contains("windows") {
+        Shell::Other
+    } else if r.contains("${{") {
+        Shell::Unknown
+    } else {
+        Shell::Posix
+    }
+}
+
+/// sieve#41 for any shell: a script sieve does not parse (PowerShell, cmd,
+/// ...) counts when it mentions `p` as a word or a variable assigned a path
+/// naming it.
+pub fn may_write_in(
+    script: &str,
+    env: &[(String, String)],
+    wd: &str,
+    p: &str,
+    shell: Shell,
+) -> bool {
+    let posix = || may_write(script, env, wd, p);
+    let other = || {
+        let s = script.replace('\\', "/").to_lowercase();
+        let pl = p.to_lowercase();
+        let word = Regex::new(&format!(
+            r"(^|[^a-z0-9_.-]){}([^a-z0-9_-]|$)",
+            regex::escape(&pl)
+        ))
+        .unwrap();
+        word.is_match(&s)
+            || wd
+                .replace('\\', "/")
+                .to_lowercase()
+                .split('/')
+                .any(|c| c == pl)
+            || env.iter().any(|(k, v)| {
+                word.is_match(&v.replace('\\', "/").to_lowercase()) && s.contains(&k.to_lowercase())
+            })
+    };
+    match shell {
+        Shell::Posix => posix(),
+        Shell::Other => other(),
+        Shell::Unknown => posix() || other(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::may_write;
@@ -2104,6 +2297,16 @@ mod tests {
             "TZ=UTC git -C gale log -1 --format=%cd",
             "docker run --rm -v \"${{ github.workspace }}/gale:/src:ro\" img make",
             "sudo apt-get install -y \"$PKG\"",
+            "docker run --mount type=bind,src=${{ github.workspace }}/gale,dst=/s,readonly img x",
+            "mkdir -p \"$HOME/.local/bin\"",
+            "cmake -S . -B gale/build",
+            "cmake -S . -B build -D CMAKE_INSTALL_PREFIX=gale",
+            "pytest -k install gale/tests",
+            "ctest -R install --test-dir gale/build",
+            "python -m pip install -r gale/requirements.txt",
+            "python3 -m pytest gale/tests",
+            "python -m pip install -e ./gale",
+            "chmod +x gale/gradlew && ./gale/gradlew build",
             "$CC -o /tmp/x main.c",
             "su runner -l --shell=/bin/bash -c 'echo ok'",
             "west sdk install -t arm-zephyr-eabi --personal-access-token \"${GITHUB_TOKEN}\"",
@@ -2244,7 +2447,6 @@ mod tests {
             "git diff --output=gale/action.yml HEAD~1",
             "docker run --rm -v \"$PWD/gale:/src\" img make",
             "cmake -E rm -rf gale",
-            "cmake -S . -B gale/build",
             // commit security review of 8143d2b
             "with-device rm -rf gale",
             "pnpm exec rm -rf gale",
@@ -2296,8 +2498,20 @@ mod tests {
             "openssl enc -d -in /tmp/x -out gale/action.yml",
             "vim -es -c '%d|wq' gale/action.yml",
             "link /tmp/x gale/action.yml",
-            "cmake -S . -B build -D CMAKE_INSTALL_PREFIX=gale",
             "docker run --rm -v \"${{ github.workspace }}/gale:/src\" img make",
+            // commit security review of ffe06e0
+            "sudo --user runner rm -rf gale",
+            "sudo --chdir /tmp rm -rf gale",
+            "docker run --mount type=bind,src=${{ github.workspace }}/gale,dst=/s,readonly=false img x",
+            "docker run -v \"${{ github.workspace }}/gale:/s:rw\" img x",
+            "git -c x=y log --output=gale/a",
+            "rm -rf \"$HOME/work/r/r/gale\"",
+            "rm -rf \"$HOME/somewhere\"",
+            "openssl req -x509 -keyout gale/k.pem -nodes",
+            // fourth review pass on ffe06e0
+            "npx @vercel/ncc build src/index.js -o gale/dist",
+            "go build -o gale/bin/tool ./cmd/tool",
+            "pip install --target gale/vendor -r requirements.txt",
         ] {
             assert!(w(s), "missed: {s:?}");
         }
@@ -2312,6 +2526,57 @@ mod tests {
         // a working directory in, or above, the path
         assert!(may_write("git checkout other", &[], "gale", "gale"));
         assert!(may_write("gh pr checkout 123", &[], "gale", "gale"));
+        // a cwd in the path with absolute targets outside, and relative ones
+        assert!(!may_write(
+            "curl -sSfL -o /tmp/tool https://example.com/tool && chmod +x /tmp/tool",
+            &[],
+            "gale",
+            "gale"
+        ));
+        assert!(!may_write("mkdir -p /tmp/out", &[], "gale", "gale"));
+        assert!(!may_write(
+            "cmake -B build && cmake --build build",
+            &[],
+            "gale",
+            "gale"
+        ));
+        assert!(!may_write("python -m pip install .", &[], "gale", "gale"));
+        assert!(may_write("cp dist/x out/", &[], "gale", "gale"));
+        // PowerShell and other shells: any mention of the path
+        use super::{may_write_in, shell_of, Shell};
+        assert_eq!(shell_of(None, "windows-latest"), Shell::Other);
+        assert_eq!(shell_of(None, "ubuntu-24.04"), Shell::Posix);
+        assert_eq!(shell_of(None, "${{ matrix.os }}"), Shell::Unknown);
+        assert_eq!(shell_of(Some("bash {0}"), "windows-latest"), Shell::Posix);
+        assert_eq!(shell_of(Some("pwsh"), "ubuntu-24.04"), Shell::Other);
+        for s in [
+            "Remove-Item -Recurse -Force gale",
+            "Copy-Item -Recurse -Force dist/* gale/",
+            "Expand-Archive x.zip -DestinationPath gale",
+        ] {
+            assert!(
+                may_write_in(s, &[], "", "gale", Shell::Other),
+                "missed: {s:?}"
+            );
+            assert!(
+                may_write_in(s, &[], "", "gale", Shell::Unknown),
+                "missed: {s:?}"
+            );
+        }
+        assert!(may_write_in(
+            "Remove-Item -Recurse $env:D",
+            &[("D".into(), "gale".into())],
+            "",
+            "gale",
+            Shell::Other
+        ));
+        assert!(!may_write_in(
+            "Write-Host ok",
+            &[],
+            "",
+            "gale",
+            Shell::Other
+        ));
         assert!(may_write(
             "git checkout -f other",
             &[("GIT_WORK_TREE".into(), "gale".into())],

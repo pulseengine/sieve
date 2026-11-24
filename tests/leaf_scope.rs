@@ -1558,3 +1558,48 @@ fn a_write_into_the_checkout_path_still_runs_everything() {
     }
     assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
 }
+
+// rivet: verifies REQ-038
+#[test]
+fn a_powershell_step_naming_the_checkout_path_runs_everything() {
+    // windows runners default to PowerShell, which sieve does not parse
+    let steps = format!(
+        "{CHECKOUT_GALE}      - run: Remove-Item -Recurse -Force gale/.github/actions/setup-renode\n{USE_RENODE}"
+    );
+    let p = ".github/dependabot.yml";
+    let wf = renode_wf(&steps).replacen("runs-on: ubuntu-24.04", "runs-on: windows-latest", 1);
+    let v = edit_files(
+        "i41-pwsh",
+        &[
+            (".github/workflows/renode.yml", wf.clone()),
+            (
+                ".github/actions/setup-renode/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: echo renode\n      shell: bash\n"
+                    .into(),
+            ),
+            (p, "x: 1\n".into()),
+        ],
+        &[(p, Some("x: 2\n".into()))],
+    );
+    assert_run_all(&v, "another repository or ref, or rewrote");
+    // the same step under an explicit bash shell is parsed (and still a write)
+    let bash = wf.replacen(
+        "      - run: Remove-Item -Recurse -Force gale/.github/actions/setup-renode\n",
+        "      - run: echo building\n        shell: bash\n",
+        1,
+    );
+    let v = edit_files(
+        "i41-pwsh-bash",
+        &[
+            (".github/workflows/renode.yml", bash),
+            (
+                ".github/actions/setup-renode/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: echo renode\n      shell: bash\n"
+                    .into(),
+            ),
+            (p, "x: 1\n".into()),
+        ],
+        &[(p, Some("x: 2\n".into()))],
+    );
+    assert_scoped(&v, &[]);
+}
