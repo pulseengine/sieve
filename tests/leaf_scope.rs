@@ -1173,3 +1173,119 @@ fn linter_detection_reads_uses_as_yaml_not_text() {
     );
     assert_scoped(&v, &["b"]);
 }
+
+// ── sieve#36, sieve#37 (gale's L18) ───────────────────────────────────────
+
+/// renode.yml: gale's shape, a checkout under `path:` then a local action
+/// through that path (`steps` replaces the job's steps).
+fn renode_wf(steps: &str) -> String {
+    format!("name: renode\non:\n  pull_request:\n  merge_group:\njobs:\n  renode:\n    runs-on: ubuntu-24.04\n    steps:\n{steps}")
+}
+
+const CHECKOUT_GALE: &str =
+    "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          path: gale\n";
+const USE_RENODE: &str =
+    "      - uses: ./gale/.github/actions/setup-renode\n      - run: echo ok\n";
+
+fn renode_case(name: &str, steps: &str) -> serde_json::Value {
+    let p = ".github/dependabot.yml";
+    edit_files(
+        name,
+        &[
+            (".github/workflows/renode.yml", renode_wf(steps)),
+            (
+                ".github/actions/setup-renode/action.yml",
+                "runs:\n  using: composite\n  steps:\n    - run: echo renode\n      shell: bash\n"
+                    .into(),
+            ),
+            (p, "x: 1\n".into()),
+        ],
+        &[(p, Some("x: 2\n".into()))],
+    )
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_local_action_under_a_same_repo_checkout_path_resolves() {
+    let v = renode_case("i36-gale", &format!("{CHECKOUT_GALE}{USE_RENODE}"));
+    assert_scoped(&v, &[]);
+    // `repository: ${{ github.repository }}` is the same repository
+    let same = "      - uses: actions/checkout@v4\n        with:\n          repository: ${{ github.repository }}\n          path: gale\n";
+    let v = renode_case("i36-same-repo", &format!("{same}{USE_RENODE}"));
+    assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn a_local_action_under_an_unprovable_checkout_path_runs_everything() {
+    let other = "      - uses: actions/checkout@v4\n        with:\n          repository: other/repo\n          path: gale\n";
+    let expr =
+        "      - uses: actions/checkout@v4\n        with:\n          path: ${{ matrix.p }}\n";
+    let cases = [
+        (
+            "i36-other-repo",
+            format!("{other}{USE_RENODE}"),
+            "another repository",
+        ),
+        (
+            "i36-path-expr",
+            format!("{expr}{USE_RENODE}"),
+            "path is an expression",
+        ),
+        (
+            "i36-use-before",
+            format!("{USE_RENODE}{CHECKOUT_GALE}"),
+            "names no tracked action",
+        ),
+        (
+            "i36-overwritten",
+            format!("{CHECKOUT_GALE}{other}{USE_RENODE}"),
+            "another repository",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
+
+// rivet: verifies REQ-030
+#[test]
+fn the_word_needs_in_a_run_comment_is_not_a_needs_read() {
+    let commented = |cmd: &str| {
+        ci().replacen(
+            "      - run: make a\n",
+            &format!("      - run: |\n          # prove curl exists before anything needs it\n          {cmd}\n"),
+            1,
+        )
+    };
+    let p = ".github/workflows/ci.yml";
+    let v = edit_files(
+        "i37-comment",
+        &[(p, commented("make a"))],
+        &[(p, Some(commented("make a2")))],
+    );
+    assert_scoped(&v, &["a"]);
+    // the same job reading needs through a step env still refuses
+    let reads = |cmd: &str| {
+        commented(cmd).replacen(
+            "      - run: |\n          # prove",
+            "      - env:\n          A: ${{ needs.changes.outputs.a }}\n        run: |\n          # prove",
+            1,
+        )
+    };
+    let v = edit_files(
+        "i37-env-read",
+        &[(p, reads("make a"))],
+        &[(p, Some(reads("make a2")))],
+    );
+    assert_run_all(&v, "reads `needs` outside its `if:`");
+}

@@ -1309,6 +1309,150 @@ fn step_gates(job: &Yaml) -> Vec<(Option<&Yaml>, Option<&Yaml>)> {
 /// A step `if:` that reads a context an edit (or another job) can change:
 /// anything but `github`, `runner` and the status functions. Contexts are
 /// case-insensitive and also read as `needs['x']` or `toJSON(needs)`.
+// Every `uses:` value anywhere below `y` (as parsed YAML, so a quoted
+// key or a folded scalar is seen).
+fn collect_uses(y: &Yaml, out: &mut Vec<String>) {
+    match y {
+        Yaml::Mapping(h) => {
+            for (k, v) in h {
+                if key_is(k, "uses") {
+                    out.push(py_str(v).trim().to_string());
+                }
+                collect_uses(v, out);
+            }
+        }
+        Yaml::Sequence(a) => a.iter().for_each(|v| collect_uses(v, out)),
+        _ => {}
+    }
+}
+
+/// sieve#37: whether `y` reads the `needs` context. A context is read only
+/// inside `${{ … }}`, or in an `if:` value (an expression without the
+/// braces), so a shell comment saying "needs" does not count. An unclosed
+/// `${{` counts as reading it (fails closed). Keys in `skip` are ignored at
+/// the top level only (a job's own `needs:` list, and its `if:` where that
+/// is checked elsewhere).
+fn reads_needs(y: &Yaml, skip: &[&str]) -> bool {
+    fn expr_reads(s: &str) -> bool {
+        let word = Regex::new(r"(?i)\bneeds\b").unwrap();
+        let mut rest = s;
+        while let Some(i) = rest.find("${{") {
+            let after = &rest[i + 3..];
+            let Some(j) = after.find("}}") else {
+                return true;
+            };
+            if word.is_match(&after[..j]) {
+                return true;
+            }
+            rest = &after[j + 2..];
+        }
+        false
+    }
+    fn walk(y: &Yaml, skip: &[&str]) -> bool {
+        match y {
+            Yaml::Mapping(h) => h.iter().any(|(k, v)| {
+                if skip.iter().any(|s| key_is(k, s)) {
+                    return false;
+                }
+                if key_is(k, "if") {
+                    return Regex::new(r"(?i)\bneeds\b").unwrap().is_match(&py_str(v));
+                }
+                walk(v, &[])
+            }),
+            Yaml::Sequence(a) => a.iter().any(|v| walk(v, &[])),
+            other => expr_reads(&py_str(other)),
+        }
+    }
+    walk(y, skip)
+}
+
+/// sieve#36: each step's local `uses:` values, rewritten through the job's
+/// earlier same-repository `actions/checkout` steps: after a checkout with
+/// `with: path: gale`, `./gale/.github/actions/x` is the repository's own
+/// `./.github/actions/x`. Fails closed (Err) on a local `uses:` under a path
+/// checked out from another repository, after a checkout whose path is an
+/// expression, or when another repository was checked out at the root. The
+/// job-level `uses:` (a reusable workflow) is returned as is.
+fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
+    fn norm(p: &str) -> String {
+        p.split('/')
+            .filter(|c| !c.is_empty() && *c != ".")
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+    let mut out = Vec::new();
+    if let Some(u) = get(job, "uses") {
+        out.push(vec![py_str(u).trim().to_string()]);
+    }
+    // checkout path -> checked out from this repository?
+    let mut paths: BTreeMap<String, bool> = BTreeMap::new();
+    let mut unknown = false;
+    for st in list(get(job, "steps")) {
+        let own = get(st, "uses").map(|u| py_str(u).trim().to_string());
+        if own
+            .as_deref()
+            .is_some_and(|u| u.starts_with("actions/checkout@") || u == "actions/checkout")
+        {
+            let with = get(st, "with");
+            let path = with
+                .and_then(|w| get_nn(w, "path"))
+                .map(py_str)
+                .unwrap_or_default();
+            let repo = with.and_then(|w| get_nn(w, "repository")).map(py_str);
+            if path.contains("${{") {
+                unknown = true;
+            }
+            let same = match repo.as_deref().map(str::trim) {
+                None => true,
+                Some(r) => {
+                    let r: String = r.chars().filter(|c| !c.is_whitespace()).collect();
+                    r == "${{github.repository}}"
+                }
+            };
+            paths.insert(norm(&path), same);
+        }
+        let mut seeds = Vec::new();
+        collect_uses(st, &mut seeds);
+        let mut step = Vec::new();
+        for s in seeds {
+            let Some(local) = s.strip_prefix("./") else {
+                step.push(s);
+                continue;
+            };
+            if unknown {
+                return Err(format!(
+                    "`uses: {s}` follows a checkout whose path is an expression"
+                ));
+            }
+            let rest = norm(local);
+            let under = paths
+                .iter()
+                .filter(|(p, _)| {
+                    !p.is_empty() && (rest == **p || rest.starts_with(&format!("{p}/")))
+                })
+                .max_by_key(|(p, _)| p.len());
+            match under {
+                Some((p, true)) => {
+                    step.push(format!("./{}", rest[p.len()..].trim_start_matches('/')))
+                }
+                Some((p, false)) => {
+                    return Err(format!(
+                        "`uses: {s}` is under `{p}`, which a step checked out from another repository"
+                    ))
+                }
+                None if paths.get("") == Some(&false) => {
+                    return Err(format!(
+                        "`uses: {s}` is local, but another repository was checked out at the workspace root"
+                    ))
+                }
+                None => step.push(s),
+            }
+        }
+        out.push(step);
+    }
+    Ok(out)
+}
+
 fn step_if_reads_mutable(cond: &str) -> bool {
     Regex::new(r"(?i)\b(needs|steps|env|jobs|matrix|strategy|inputs|vars|secrets)\b")
         .unwrap()
@@ -1328,7 +1472,6 @@ pub fn linter_classes(
         r"(?i)\b(actionlint|yamllint|yaml-lint|zizmor|pre-commit|prek|super-linter|megalinter|mega-linter|checkov|prettier|typos|codespell|reuse|markdownlint|markdownlint-cli2|lychee|check-jsonschema|editorconfig-checker|biome|dprint|taplo)\b",
     )
     .unwrap();
-    let needs_word = Regex::new(r"(?i)\bneeds\b").unwrap();
     let wf_by_path: BTreeMap<&str, &str> = workflows
         .iter()
         .map(|(p, t)| (p.as_str(), t.as_str()))
@@ -1346,22 +1489,6 @@ pub fn linter_classes(
             }
         }
         Some(parts.join("/"))
-    }
-    // Every `uses:` value anywhere below `y` (as parsed YAML, so a quoted
-    // key or a folded scalar is seen).
-    fn collect_uses(y: &Yaml, out: &mut Vec<String>) {
-        match y {
-            Yaml::Mapping(h) => {
-                for (k, v) in h {
-                    if key_is(k, "uses") {
-                        out.push(py_str(v).trim().to_string());
-                    }
-                    collect_uses(v, out);
-                }
-            }
-            Yaml::Sequence(a) => a.iter().for_each(|v| collect_uses(v, out)),
-            _ => {}
-        }
     }
     // The text of every local action or reusable workflow `seeds` name,
     // recursively; a local path that resolves to no tracked file, or an
@@ -1408,21 +1535,24 @@ pub fn linter_classes(
         for (jid, job) in &jobs {
             let mut own = String::new();
             flatten(job, &mut own);
-            let mut seeds = Vec::new();
-            collect_uses(job, &mut seeds);
-            let full = own + &expand(seeds, actions, &wf_by_path, &mut BTreeSet::new())?;
+            // sieve#36: local `uses:` resolved through the job's checkout paths
+            let per = checkout_seeds(job).map_err(|e| format!("{path}: job {jid}: {e}"))?;
+            let full = own + &expand(per.concat(), actions, &wf_by_path, &mut BTreeSet::new())?;
+            let per_step: &[Vec<String>] = if has(job, "uses") {
+                &per[1..]
+            } else {
+                &per[..]
+            };
             if !lint.is_match(&full) {
                 continue;
             }
             // A gate inside the linter job (a step `if:` on its linter step,
             // or `needs` read outside `needs:`/`if:`) cannot be mapped to a
             // class: run everything.
-            for st in list(get(job, "steps")) {
+            for (st, seeds) in list(get(job, "steps")).into_iter().zip(per_step) {
                 let mut t = String::new();
                 flatten(st, &mut t);
-                let mut seeds = Vec::new();
-                collect_uses(st, &mut seeds);
-                let t = t + &expand(seeds, actions, &wf_by_path, &mut BTreeSet::new())?;
+                let t = t + &expand(seeds.clone(), actions, &wf_by_path, &mut BTreeSet::new())?;
                 if lint.is_match(&t)
                     && get(st, "if")
                         .is_some_and(|c| !unconditional_if(c) && step_if_reads_mutable(&py_str(c)))
@@ -1432,15 +1562,8 @@ pub fn linter_classes(
                     ));
                 }
             }
-            let mut body = String::new();
-            if let Yaml::Mapping(h) = job {
-                for (k, v) in h {
-                    if !key_is(k, "needs") && !key_is(k, "if") {
-                        flatten(v, &mut body);
-                    }
-                }
-            }
-            if needs_word.is_match(&body) {
+            // sieve#37: only `${{ }}` and `if:` can read a context
+            if reads_needs(job, &["needs", "if"]) {
                 return Err(format!(
                     "{path}: job {jid} runs a whole-repository linter and reads `needs` outside its `if:`"
                 ));
@@ -1560,7 +1683,6 @@ pub fn leaf_scope_file(
         },
         None => format!("{file} is added"),
     };
-    let needs_re = Regex::new(r"(?i)\bneeds\b").unwrap();
     for y in &versions {
         if !classifier_jobs(y).is_empty() {
             return Err(format!("{refusal} (and the file hosts a classifier job)"));
@@ -1592,15 +1714,8 @@ pub fn leaf_scope_file(
                     "{refusal} (and job {j} has a step `if:` reading a context other than github or runner)"
                 ));
             }
-            let mut body = String::new();
-            if let Yaml::Mapping(h) = job {
-                for (k, v) in h {
-                    if !key_is(k, "needs") {
-                        flatten(v, &mut body);
-                    }
-                }
-            }
-            if needs_re.is_match(&body) {
+            // sieve#37: only `${{ }}` and `if:` can read a context
+            if reads_needs(job, &["needs"]) {
                 return Err(format!("{refusal} (and job {j} reads `needs`)"));
             }
             // A job that needs another can receive a gate out of band (an
@@ -1754,7 +1869,6 @@ pub fn leaf_scope(
         }
         affected.extend(grown);
     }
-    let needs_word = Regex::new(r"(?i)\bneeds\b").unwrap();
     for j in &affected {
         if cls.contains_key(j) {
             return Err(format!("{file}: classifier job {j} needs a changed job"));
@@ -1780,15 +1894,8 @@ pub fn leaf_scope(
         // Security review of sieve#27: a job that reads `needs` outside its
         // `if:` and `needs:` (env, with, a run script) can skip its own work
         // on a classifier output, e.g. `[ "$A" = false ] && exit 0`.
-        let mut body = String::new();
-        if let Yaml::Mapping(h) = hmap[j] {
-            for (k, v) in h {
-                if !key_is(k, "needs") && !key_is(k, "if") {
-                    flatten(v, &mut body);
-                }
-            }
-        }
-        if needs_word.is_match(&body) {
+        // sieve#37: only `${{ }}` and `if:` can read a context
+        if reads_needs(hmap[j], &["needs", "if"]) {
             return Err(format!(
                 "{file}: job {j} reads `needs` outside its `if:`, so its work may depend on a classifier output"
             ));
