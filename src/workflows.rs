@@ -1401,7 +1401,13 @@ fn get_ci<'a>(y: &'a Yaml, name: &str) -> Option<&'a Yaml> {
 /// checked out from another repository, after a checkout whose path is an
 /// expression, or when another repository was checked out at the root. The
 /// job-level `uses:` (a reusable workflow) is returned as is.
-fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
+fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, String> {
+    // the working directory a `run:` step without its own gets
+    let default_wd = get(job, "defaults")
+        .and_then(|d| get(d, "run"))
+        .and_then(|r| get_ci(r, "working-directory"))
+        .map(py_str)
+        .unwrap_or_else(|| wf_default_wd.to_string());
     fn norm(p: &str) -> String {
         p.split('/')
             .filter(|c| !c.is_empty() && *c != ".")
@@ -1416,6 +1422,10 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
     let mut paths: BTreeMap<String, bool> = BTreeMap::new();
     let mut unknown = false;
     let touches = Regex::new(r"\b(git|rm|mv|cp|tar|curl|wget|rsync|unzip)\b").unwrap();
+    let path_key = Regex::new(
+        r"(?i)^(path|paths|dest|destination|dir|directory|target|target-dir|working-directory|output|out|into|location)$",
+    )
+    .unwrap();
     for st in list(get(job, "steps")) {
         let own = get(st, "uses").map(|u| py_str(u).trim().to_string());
         let action = own
@@ -1424,6 +1434,15 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
             .unwrap_or_default();
         if action == "actions/checkout" {
             let with = get(st, "with");
+            // inputs spelled twice in different case: which one GitHub uses is not
+            // modelled, so the checkout is not either
+            let mut seen_keys = BTreeSet::new();
+            if entries(with)
+                .into_iter()
+                .any(|(k, _)| !seen_keys.insert(k.to_ascii_lowercase()))
+            {
+                unknown = true;
+            }
             // action inputs are matched without case, as GitHub does
             let path = with
                 .and_then(|w| get_ci(w, "path"))
@@ -1489,39 +1508,58 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
             }
         }
         // A later step that may rewrite a checked-out path makes it untrusted:
-        // a `run:` that names it, or runs in it (`working-directory:`), with a
-        // file or git command; any other action with an input pointing at or
-        // under it. (The workspace root is not tracked this way: a step that
-        // rewrites the root is a limit for every local `uses:`.)
-        let under = |v: &str, p: &str| {
-            let v = norm(
-                v.trim()
-                    .trim_start_matches("$GITHUB_WORKSPACE")
-                    .trim_start_matches('/'),
-            );
-            v == p || v.starts_with(&format!("{p}/"))
+        // a `run:` that names it, or runs in it (its `working-directory:`, or
+        // the job's or workflow's `defaults.run.working-directory`), with a
+        // file or git command; any other action with an input pointing at,
+        // under or above it. A path-like value sieve cannot place (`..`, an
+        // expression, an absolute path) counts as touching every path. (The
+        // workspace root is not tracked this way: a step that rewrites the
+        // root is a limit for every local `uses:`.)
+        let unplaceable = |v: &str| {
+            v.contains("${")
+                || v.split('/').any(|c| c == "..")
+                || v.trim().starts_with('/')
+                || (v.trim().starts_with('~') && !v.trim().starts_with("~/."))
+        };
+        // `v` (one path per line) at or under `p`; for a path-like input also
+        // above it (`.` or a parent replaces it too)
+        let hits = |v: &str, p: &str, pathlike: bool| {
+            v.lines().filter(|l| !l.trim().is_empty()).any(|l| {
+                let l = norm(
+                    l.trim()
+                        .trim_start_matches("$GITHUB_WORKSPACE")
+                        .trim_start_matches('/'),
+                );
+                l == p
+                    || l.starts_with(&format!("{p}/"))
+                    || (pathlike && (l.is_empty() || p.starts_with(&format!("{l}/"))))
+            })
         };
         if action != "actions/checkout" {
             if let Some(run) = get(st, "run").map(py_str) {
                 let wd = get_ci(st, "working-directory")
                     .map(py_str)
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| default_wd.to_string());
                 if touches.is_match(&run) {
+                    let blind = !wd.is_empty() && unplaceable(&wd);
                     for (p, same) in paths.iter_mut() {
-                        if !p.is_empty() && (run.contains(p.as_str()) || under(&wd, p)) {
+                        if !p.is_empty()
+                            && (blind || run.contains(p.as_str()) || hits(&wd, p, true))
+                        {
                             *same = false;
                         }
                     }
                 }
             }
             if !action.is_empty() {
-                let inputs: Vec<String> = entries(get(st, "with"))
-                    .into_iter()
-                    .map(|(_, v)| py_str(v))
-                    .collect();
-                for (p, same) in paths.iter_mut() {
-                    if !p.is_empty() && inputs.iter().any(|v| under(v, p)) {
-                        *same = false;
+                for (k, v) in entries(get(st, "with")) {
+                    let v = py_str(v);
+                    let pathlike = path_key.is_match(&k);
+                    let blind = pathlike && v.lines().any(unplaceable);
+                    for (p, same) in paths.iter_mut() {
+                        if !p.is_empty() && (blind || hits(&v, p, pathlike)) {
+                            *same = false;
+                        }
                     }
                 }
             }
@@ -1609,12 +1647,18 @@ pub fn linter_classes(
     for (path, text) in workflows {
         let wf = rivet_yaml::from_str::<Yaml>(text)
             .map_err(|e| format!("{path} is unparseable ({e}), so its linters cannot be found"))?;
+        let wf_default_wd = get(&wf, "defaults")
+            .and_then(|d| get(d, "run"))
+            .and_then(|r| get_ci(r, "working-directory"))
+            .map(py_str)
+            .unwrap_or_default();
         let jobs: BTreeMap<String, &Yaml> = entries(get(&wf, "jobs")).into_iter().collect();
         for (jid, job) in &jobs {
             let mut own = String::new();
             flatten(job, &mut own);
             // sieve#36: local `uses:` resolved through the job's checkout paths
-            let per = checkout_seeds(job).map_err(|e| format!("{path}: job {jid}: {e}"))?;
+            let per = checkout_seeds(job, &wf_default_wd)
+                .map_err(|e| format!("{path}: job {jid}: {e}"))?;
             let full = own + &expand(per.concat(), actions, &wf_by_path, &mut BTreeSet::new())?;
             let per_step: &[Vec<String>] = if has(job, "uses") {
                 &per[1..]

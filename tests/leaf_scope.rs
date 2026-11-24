@@ -1400,3 +1400,64 @@ fn checkout_resolution_reads_inputs_without_case_and_sees_other_rewriters() {
     );
     assert_scoped(&v, &[]);
 }
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_sees_defaults_parents_and_duplicate_inputs() {
+    let git_step = "      - run: git checkout other-branch\n";
+    let job_defaults = format!("{CHECKOUT_GALE}{git_step}{USE_RENODE}");
+    let cases: Vec<(&str, String, &str)> = vec![
+        ("i36d-dest-dot", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: .\n{USE_RENODE}"), "another repository or ref"),
+        ("i36d-dest-dotdot", format!("{CHECKOUT_GALE}      - uses: some/unpack@v1\n        with:\n          dest: x/../gale\n{USE_RENODE}"), "another repository or ref"),
+        ("i36d-dup-keys", format!("      - uses: actions/checkout@v4\n        with:\n          Path: gale\n          path: gale\n{USE_RENODE}"), "cannot model"),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    // job- and workflow-level `defaults.run.working-directory: gale`
+    for (name, wf) in [
+        (
+            "i36d-job-defaults",
+            renode_wf(&job_defaults).replacen(
+                "    runs-on: ubuntu-24.04\n",
+                "    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        working-directory: gale\n",
+                1,
+            ),
+        ),
+        (
+            "i36d-wf-defaults",
+            renode_wf(&job_defaults).replacen(
+                "jobs:\n",
+                "defaults:\n  run:\n    working-directory: gale\njobs:\n",
+                1,
+            ),
+        ),
+    ] {
+        let p = ".github/dependabot.yml";
+        let v = edit_files(
+            name,
+            &[
+                (".github/workflows/renode.yml", wf),
+                (
+                    ".github/actions/setup-renode/action.yml",
+                    "runs:\n  using: composite\n  steps:\n    - run: echo renode\n      shell: bash\n".into(),
+                ),
+                (p, "x: 1\n".into()),
+            ],
+            &[(p, Some("x: 2\n".into()))],
+        );
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains("another repository or ref") {
+            bad.push(format!("{name}: run_all={} reason={reason:?}", v["run_all"]));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
