@@ -168,15 +168,23 @@ composite actions and local reusable workflows are inlined, recursively (a
 `./<p>/...` path after a same-repository `actions/checkout` with `path: <p>`
 earlier in the job resolves to the repository's own `./...`); a
 local `uses:` that resolves to no tracked file, or sits under a path checked
-out from another repository or ref (or rewritten by a later step: a file or
-git command naming it or run in it, or an action input pointing into it), or follows
+out from another repository or ref (or rewritten by a later step: see below), or follows
 a checkout sieve cannot model (a fork, an expression or `..` path), a linter job gated by an
 `if:` that is not the classifier form, or a linter step behind its own
 step-level gate makes the edit run everything. Remote actions and remote
 reusable workflows are not inlined. A step that rewrites the workspace root (a `git
 checkout` of another ref before a local `uses:`) is not detected. An action
 input that rewrites a checked-out path is seen only when its key is
-path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). Only those names are detected: any other check that reads
+path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). A later `run:` step rewrites the path
+when one of its commands writes (git, rm, mv, cp, tar, rsync, curl, ... ,
+`sed -i`, a redirection) and names it: literally, through a variable
+assigned a path naming it (step, job or workflow `env:` or the script), or
+by running in it (`cd`, `working-directory:`); shell comments, reads
+(`grep`, `-s "$GALE_ROOT"`) and other words do not count (sieve#41). An
+unassigned variable, an expression or `~` in a written path, a `cd` to one,
+`xargs` feeding a writer, inline interpreter code naming the path and an
+unparseable script count as a rewrite. A program that writes into the path on
+its own (`make`, `west`, a script) is not seen. Only the linter names above are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.

@@ -10,6 +10,7 @@ mod graph;
 mod lex;
 mod observe;
 mod repo;
+mod runscan;
 mod workflows;
 
 use classify::Verdict;

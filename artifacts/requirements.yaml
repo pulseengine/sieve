@@ -720,6 +720,33 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-005}
 
+  - id: REQ-038
+    type: requirement
+    title: A later run step rewrites a checkout path only when one command writes and names it
+    status: implemented
+    release: v0.4.4
+    description: >
+      sieve#41. For a local uses: resolved through an earlier same-repository
+      actions/checkout path (sieve#36), a later run: step distrusts that path
+      only when one of its simple commands writes (git, rm, mv, cp, tar,
+      rsync, curl and other file commands, sed -i, perl -i, a find that
+      deletes or executes, a redirection) and names the path: literally as a
+      path component, through a variable assigned a path naming it (workflow,
+      job or step env:, or the script, including a for loop), or by running in
+      it (cd, pushd, working-directory:, defaults). Shell comments, reads,
+      branch names and other words do not count. Fails closed: an unassigned
+      variable, an expression or ~ in a written path, a cd to one, xargs
+      feeding a writer, sh -c and eval (parsed as scripts), inline interpreter
+      code naming the path, and an unparseable script count as a rewrite.
+      A program that writes into the path on its own is not seen, as before.
+    fields:
+      priority: should
+      category: functional
+      review: author-verified only (src/runscan.rs unit tests, tests/leaf_scope.rs; always-true and always-false mutants killed); no independent review yet
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+      - {type: derives-from, target: REQ-035}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
@@ -881,6 +908,7 @@ artifacts:
       - {type: satisfies, target: REQ-027}
       - {type: satisfies, target: REQ-035}
       - {type: satisfies, target: REQ-036}
+      - {type: satisfies, target: REQ-038}
 
   - id: FEAT-010
     type: feature

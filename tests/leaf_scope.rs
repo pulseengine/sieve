@@ -1494,3 +1494,67 @@ fn a_checkout_path_with_a_backslash_is_not_modelled() {
     let v = renode_case("i36f-backslash-path", &steps);
     assert_run_all(&v, "cannot model");
 }
+
+// ── sieve#41 (gale's L18 on 0.4.3) ─────────────────────────────────────────
+
+/// gale's renode steps between the checkout and the local action: a comment
+/// naming an issue, a read of a pinned file, a branch name, a build reading
+/// the checkout through a variable, writes elsewhere.
+const GALE_BUILD_STEPS: &str = "      - run: |
+          # RETRY, POSIX-sh SAFE (gale#289).
+          apt-get install -y -qq curl > /dev/null
+          if curl --proto '=https' -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh; then sh /tmp/rustup-init.sh -y; fi
+      - run: |
+          rm -rf /opt/toolchains/zephyr-sdk-* 2>/dev/null || true
+          ZEPHYR_FORK_REV=\"$(grep -v '^#' \"${GITHUB_WORKSPACE}/gale/.github/zephyr-fork-pin\" | tr -d '[:space:]')\"
+          west init -m https://github.com/pulseengine/zephyr.git --mr gale/sem-replacement /mnt/ws
+          git -C /mnt/ws/zephyr fetch --depth 1 origin \"$ZEPHYR_FORK_REV\"
+          git -C /mnt/ws/zephyr checkout --detach FETCH_HEAD
+          cd /mnt/ws
+          west update
+      - env:
+          GALE_ROOT: ${{ github.workspace }}/gale
+        run: |
+          west build -b stm32f4_disco -d /tmp/engine-gale -s \"$GALE_ROOT/benches/engine_control\" -- -DZEPHYR_EXTRA_MODULES=\"$GALE_ROOT\"
+          echo \"ELF=/tmp/engine-gale/zephyr/zephyr.elf\" >> \"$GITHUB_ENV\"
+";
+
+// rivet: verifies REQ-038
+#[test]
+fn reads_comments_and_branch_names_after_a_checkout_are_not_rewrites() {
+    let v = renode_case(
+        "i41-gale-steps",
+        &format!("{CHECKOUT_GALE}{GALE_BUILD_STEPS}{USE_RENODE}"),
+    );
+    assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-038
+#[test]
+fn a_write_into_the_checkout_path_still_runs_everything() {
+    let tainted = "      - env:\n          GALE_ROOT: ${{ github.workspace }}/gale\n        run: rm -rf \"$GALE_ROOT/.github\"\n";
+    let cases = [
+        ("i41-rm", "      - run: rm -rf gale/.github\n".to_string()),
+        ("i41-cd-git", "      - run: |\n          cd gale\n          git checkout other\n".to_string()),
+        ("i41-redirect", "      - run: echo x > gale/.github/actions/setup-renode/action.yml\n".to_string()),
+        ("i41-env-var", tainted.to_string()),
+        ("i41-unset-var", "      - run: cp -r /tmp/x \"$DEST\"\n".to_string()),
+        ("i41-bash-c", "      - run: bash -c 'git -C gale reset --hard HEAD~1'\n".to_string()),
+        ("i41-script-var", "      - run: |\n          D=\"${GITHUB_WORKSPACE}/gale\"\n          tar -xzf /tmp/a.tgz -C \"$D\"\n".to_string()),
+        ("i41-glob", "      - run: rm -rf ./g*/.github\n".to_string()),
+        ("i41-unclosed", "      - run: \"echo 'x\"\n".to_string()),
+        ("i41-after-comment", "      - run: |\n          # gale#289\n          echo ok; mv /tmp/action.yml gale/.github/actions/setup-renode/\n".to_string()),
+    ];
+    let mut bad = vec![];
+    for (name, step) in cases {
+        let v = renode_case(name, &format!("{CHECKOUT_GALE}{step}{USE_RENODE}"));
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains("another repository or ref, or rewrote") {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?}",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+}
