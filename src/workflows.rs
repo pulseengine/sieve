@@ -1338,7 +1338,23 @@ fn reads_needs(y: &Yaml, skip: &[&str]) -> bool {
         let mut rest = s;
         while let Some(i) = rest.find("${{") {
             let after = &rest[i + 3..];
-            let Some(j) = after.find("}}") else {
+            // The closing `}}` outside a '...' literal ('' escapes a quote),
+            // as GitHub reads it; none means unclosed, which counts.
+            let b = after.as_bytes();
+            let (mut k, mut in_str, mut end) = (0, false, None);
+            while k < b.len() {
+                match (in_str, b[k]) {
+                    (true, b'\'') if b.get(k + 1) == Some(&b'\'') => k += 1,
+                    (_, b'\'') => in_str = !in_str,
+                    (false, b'}') if b.get(k + 1) == Some(&b'}') => {
+                        end = Some(k);
+                        break;
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            let Some(j) = end else {
                 return true;
             };
             if word.is_match(&after[..j]) {
@@ -1387,29 +1403,48 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
     // checkout path -> checked out from this repository?
     let mut paths: BTreeMap<String, bool> = BTreeMap::new();
     let mut unknown = false;
+    let touches = Regex::new(r"\b(git|rm|mv|cp|tar|curl|wget|rsync|unzip)\b").unwrap();
     for st in list(get(job, "steps")) {
         let own = get(st, "uses").map(|u| py_str(u).trim().to_string());
-        if own
+        let action = own
             .as_deref()
-            .is_some_and(|u| u.starts_with("actions/checkout@") || u == "actions/checkout")
-        {
+            .map(|u| u.split('@').next().unwrap_or("").to_ascii_lowercase())
+            .unwrap_or_default();
+        if action == "actions/checkout" {
             let with = get(st, "with");
             let path = with
                 .and_then(|w| get_nn(w, "path"))
                 .map(py_str)
                 .unwrap_or_default();
             let repo = with.and_then(|w| get_nn(w, "repository")).map(py_str);
-            if path.contains("${{") {
+            if path.contains("${{") || path.split('/').any(|c| c == "..") {
                 unknown = true;
             }
-            let same = match repo.as_deref().map(str::trim) {
-                None => true,
-                Some(r) => {
-                    let r: String = r.chars().filter(|c| !c.is_whitespace()).collect();
-                    r == "${{github.repository}}"
-                }
-            };
+            // another ref of this repository puts other action code there
+            let pinned = with.and_then(|w| get_nn(w, "ref")).is_some();
+            let same = !pinned
+                && match repo.as_deref().map(str::trim) {
+                    None => true,
+                    Some(r) => {
+                        let r: String = r.chars().filter(|c| !c.is_whitespace()).collect();
+                        r == "${{github.repository}}"
+                    }
+                };
             paths.insert(norm(&path), same);
+        } else if action.contains("checkout") {
+            // a checkout sieve cannot model (a fork, a wrapper)
+            unknown = true;
+        }
+        // a later step that rewrites a checked-out path (`rm -rf gale && git
+        // clone other gale`) makes that path untrusted
+        if let Some(run) = get(st, "run").map(py_str) {
+            if touches.is_match(&run) {
+                for (p, same) in paths.iter_mut() {
+                    if !p.is_empty() && run.contains(p.as_str()) {
+                        *same = false;
+                    }
+                }
+            }
         }
         let mut seeds = Vec::new();
         collect_uses(st, &mut seeds);
@@ -1421,8 +1456,11 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
             };
             if unknown {
                 return Err(format!(
-                    "`uses: {s}` follows a checkout whose path is an expression"
+                    "`uses: {s}` follows a checkout sieve cannot model (a path from an expression or with `..`, or a checkout action other than actions/checkout)"
                 ));
+            }
+            if local.split('/').any(|c| c == "..") {
+                return Err(format!("`uses: {s}` has a `..` segment"));
             }
             let rest = norm(local);
             let under = paths
@@ -1437,7 +1475,7 @@ fn checkout_seeds(job: &Yaml) -> Result<Vec<Vec<String>>, String> {
                 }
                 Some((p, false)) => {
                     return Err(format!(
-                        "`uses: {s}` is under `{p}`, which a step checked out from another repository"
+                        "`uses: {s}` is under `{p}`, which a step checked out from another repository or ref, or rewrote"
                     ))
                 }
                 None if paths.get("") == Some(&false) => {

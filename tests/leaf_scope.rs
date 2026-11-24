@@ -1230,7 +1230,7 @@ fn a_local_action_under_an_unprovable_checkout_path_runs_everything() {
         (
             "i36-path-expr",
             format!("{expr}{USE_RENODE}"),
-            "path is an expression",
+            "cannot model",
         ),
         (
             "i36-use-before",
@@ -1286,6 +1286,77 @@ fn the_word_needs_in_a_run_comment_is_not_a_needs_read() {
         "i37-env-read",
         &[(p, reads("make a"))],
         &[(p, Some(reads("make a2")))],
+    );
+    assert_run_all(&v, "reads `needs` outside its `if:`");
+}
+
+// rivet: verifies REQ-035
+#[test]
+fn checkout_resolution_fails_closed_on_forks_refs_rewrites_and_dotdot() {
+    let with = |extra: &str| {
+        format!("      - uses: actions/checkout@v4\n        with:\n          path: gale\n{extra}")
+    };
+    let cases = [
+        (
+            "i36b-fork",
+            format!("      - uses: my/checkout@v4\n        with:\n          path: gale\n{USE_RENODE}"),
+            "cannot model",
+        ),
+        ("i36b-ref", format!("{}{USE_RENODE}", with("          ref: main\n")), "another repository or ref"),
+        (
+            "i36b-rewrite",
+            format!("{CHECKOUT_GALE}      - run: rm -rf gale && git clone https://example.invalid/x gale\n{USE_RENODE}"),
+            "another repository or ref",
+        ),
+        (
+            "i36b-dotdot-path",
+            format!("      - uses: actions/checkout@v4\n        with:\n          path: x/../gale\n{USE_RENODE}"),
+            "cannot model",
+        ),
+        (
+            "i36b-dotdot-uses",
+            format!("{CHECKOUT_GALE}      - uses: ./gale/../gale/.github/actions/setup-renode\n"),
+            "`..` segment",
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, steps, why) in cases {
+        let v = renode_case(name, &steps);
+        let reason = v["reason"].as_str().unwrap_or("");
+        if v["run_all"] != true || !reason.contains(why) {
+            bad.push(format!(
+                "{name}: run_all={} reason={reason:?} (want {why:?})",
+                v["run_all"]
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "controls not holding:\n{}", bad.join("\n"));
+    // the action name is matched without case
+    let v = renode_case(
+        "i36b-case",
+        &format!(
+            "      - uses: Actions/Checkout@v4\n        with:\n          path: gale\n{USE_RENODE}"
+        ),
+    );
+    assert_scoped(&v, &[]);
+}
+
+// rivet: verifies REQ-030
+#[test]
+fn a_closing_brace_pair_inside_a_string_literal_does_not_end_the_expression() {
+    // reviewer r4/r5: `}}` inside '...' in format() is not the expression end
+    let gate = |cmd: &str| {
+        ci().replacen(
+            "      - run: make a\n",
+            &format!("      - run: |\n          A='${{{{ format('{{{{\"a\":{{0}}}}}}', needs.changes.outputs.a) }}}}'; echo \"$A\" | grep -q true || exit 0\n          {cmd}\n"),
+            1,
+        )
+    };
+    let p = ".github/workflows/ci.yml";
+    let v = edit_files(
+        "i37b-format",
+        &[(p, gate("make a"))],
+        &[(p, Some(gate("make a2")))],
     );
     assert_run_all(&v, "reads `needs` outside its `if:`");
 }
