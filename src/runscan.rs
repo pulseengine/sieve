@@ -1842,35 +1842,16 @@ impl Scan {
                 if is_interpreter(&b) {
                     // inline code, or code on stdin, here-documents and
                     // process substitutions: anything but a script file
-                    // `python -m mod`, `-mmod`, `-um mod`: a module, like a
-                    // script file
-                    let module_name: Option<String> = {
-                        let mut found = None;
-                        let mut it = rest.iter();
-                        while let Some(a) = it.next() {
-                            if !a.starts_with('-') || a.starts_with("--") {
-                                if a.starts_with("--") {
-                                    continue;
-                                }
-                                break;
-                            }
-                            if let Some(pos) = a[1..].find('m') {
-                                if a[1..1 + pos].chars().all(|x| x.is_ascii_alphabetic()) {
-                                    let after = &a[1 + pos + 1..];
-                                    found = Some(if after.is_empty() {
-                                        it.next().cloned().unwrap_or_default()
-                                    } else {
-                                        after.to_string()
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-                        found
-                    };
+                    // python: `-m mod` (also `-mmod`, `-um mod`) runs a module,
+                    // like a script file; `-c` (also attached, in a cluster) is
+                    // inline code. Other interpreters: their inline-code flags.
+                    let (module_name, inline): (Option<String>, bool) =
+                        if b.starts_with("python") || b.starts_with("pypy") {
+                            python_mode(rest)
+                        } else {
+                            (None, has_inline(rest))
+                        };
                     let module = module_name.is_some();
-                    // (with -m the words after the module are its arguments)
-                    let inline = !module && has_inline(rest);
                     // a module other than a read-only one, with an argument naming
                     // `p` outright, counts
                     if let Some(m) = module_name.as_deref() {
@@ -1885,35 +1866,28 @@ impl Scan {
                             "black" => has("--check") || has("--diff"),
                             "isort" => has("--check-only") || has("--check") || has("--diff"),
                             "ruff" => {
-                                !has("--fix")
-                                    && (rest.iter().any(|a| a == "check")
-                                        || (rest.iter().any(|a| a == "format") && has("--check")))
+                                !rest.iter().any(|a| {
+                                    a.starts_with("--fix")
+                                        || a.starts_with("--unsafe-fixes")
+                                        || a.starts_with("--add-noqa")
+                                }) && (rest.iter().any(|a| a == "check")
+                                    || (rest.iter().any(|a| a == "format") && has("--check")))
                             }
                             // pip reads and installs into site-packages unless a
                             // destination is given
-                            "pip" => {
-                                rest.iter().any(|a| {
-                                    matches!(
-                                        a.as_str(),
-                                        "install" | "list" | "show" | "freeze" | "check"
-                                    )
-                                }) && ![
-                                    "-d",
-                                    "-w",
-                                    "-t",
-                                    "--dest",
-                                    "--wheel-dir",
-                                    "--target",
-                                    "--prefix",
-                                    "--root",
-                                    "--src",
-                                ]
-                                .iter()
-                                .any(|f| has(f))
-                            }
+                            "pip" => pip_read_only(rest),
                             _ => false,
                         };
-                        if !read_only && rest.iter().any(|a| self.names_outright(a)) {
+                        if !read_only
+                            && rest.iter().any(|a| {
+                                // also a value attached to a short option (`-tp/x`)
+                                self.names_outright(a)
+                                    || (a.starts_with('-')
+                                        && !a.starts_with("--")
+                                        && a.len() > 2
+                                        && self.names_outright(&a[2..]))
+                            })
+                        {
                             hit = true;
                         }
                     }
@@ -2024,6 +1998,93 @@ fn has_inline(args: &[String]) -> bool {
                 && !a.starts_with("--")
                 && a[1..].chars().all(|x| x.is_ascii_alphabetic())
                 && a.contains(['c', 'e', 'p']))
+    })
+}
+
+/// Python's options up to the script, `-c` or `-m`: the module `-m` names,
+/// and whether `-c` gives inline code. A cluster is read flag by flag (`-um
+/// mod`, `-uc code`); an option this does not know counts as inline code
+/// (fail closed).
+fn python_mode(args: &[String]) -> (Option<String>, bool) {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" || !a.starts_with('-') || a == "-" {
+            return (None, false);
+        }
+        if a.starts_with("--") {
+            // long options (--version, --help) take no code; one with a value
+            // we do not know is unsure
+            if !matches!(a, "--version" | "--help" | "-V") {
+                return (None, true);
+            }
+            i += 1;
+            continue;
+        }
+        let cl: Vec<char> = a[1..].chars().collect();
+        let mut j = 0;
+        let mut skip_next = false;
+        while j < cl.len() {
+            match cl[j] {
+                'b' | 'B' | 'd' | 'E' | 'h' | 'i' | 'I' | 'O' | 'P' | 'q' | 's' | 'S' | 'u'
+                | 'v' | 'V' | 'x' | 'R' => j += 1,
+                'c' => return (None, true),
+                'm' => {
+                    let rest: String = cl[j + 1..].iter().collect();
+                    let m = if rest.is_empty() {
+                        args.get(i + 1).cloned().unwrap_or_default()
+                    } else {
+                        rest
+                    };
+                    return (Some(m), false);
+                }
+                // value-taking: the rest of the word, or the next word
+                'W' | 'X' | 'Q' => {
+                    skip_next = j + 1 == cl.len();
+                    break;
+                }
+                _ => return (None, true),
+            }
+        }
+        i += if skip_next { 2 } else { 1 };
+    }
+    (None, false)
+}
+
+/// `python -m pip` that reads or installs into site-packages: the
+/// subcommand (the first operand) is one of those, and no destination option
+/// is given, attached (`-tdir`) or abbreviated (`--tar=dir`).
+fn pip_read_only(args: &[String]) -> bool {
+    // the words after `-m pip`
+    let after: Vec<&String> = args
+        .iter()
+        .skip_while(|a| !a.ends_with("pip") && a.as_str() != "pip")
+        .skip(1)
+        .collect();
+    let sub = after
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .map(|s| s.as_str());
+    if !matches!(sub, Some("install" | "list" | "show" | "freeze" | "check")) {
+        return false;
+    }
+    const DEST: &[&str] = &[
+        "--target",
+        "--dest",
+        "--wheel-dir",
+        "--prefix",
+        "--root",
+        "--src",
+    ];
+    !after.iter().any(|a| {
+        let opt = a.split('=').next().unwrap_or(a);
+        (!opt.starts_with("--")
+            && opt.starts_with('-')
+            && opt[1..].chars().any(|c| matches!(c, 't' | 'd' | 'w')))
+            || (opt.starts_with("--")
+                && opt.len() >= 4
+                && opt != "--pre"
+                && DEST.iter().any(|d| d.starts_with(opt)))
     })
 }
 
@@ -2682,6 +2743,15 @@ mod tests {
             "python -m pip download -d gale/vendor x",
             "npm --prefix /tmp exec -- rm -rf gale",
             "yarn rimraf gale",
+            // commit security review of e4b19b0
+            "python -c\"import shutil; shutil.rmtree('gale')\"",
+            "python -uc \"import shutil; shutil.rmtree('gale')\"",
+            "python -cimport\\ shutil -m x gale",
+            "python -m ruff check --fix-only gale",
+            "python -m ruff check --unsafe-fixes gale",
+            "python -m pip install -tgale/vendor x",
+            "python -m pip install --tar=gale/vendor x",
+            "python -m pip download gale/x",
             "go run ./tools/gen -o gale/.github/actions/x/action.yml",
             "pip install --target gale/vendor -r requirements.txt",
         ] {
