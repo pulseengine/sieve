@@ -245,3 +245,30 @@ Evidence: a control for each refusal, failing with its check reverted; a
 fresh-context review (clean at f2e0f8c) and automated security review on every push,
 each confirmed finding fixed with its own control; fmt, clippy and the full
 suite on the PR head 54ca189 and on main cc3e431.
+
+## v0.4.4 (prepared 2026-11-25)
+
+- sieve#41 (#42, REQ-038): a later `run:` step distrusts a checkout path
+  only when one of its commands is a writer and names the path or runs in it.
+  0.4.3 counted any file or git word plus the path as a word anywhere
+  (a comment, a read, a branch name), so gale scoped 0 of 82 jobs.
+  `src/runscan.rs` splits the script into commands. It fails closed on
+  unknown variables, expressions, unresolved command names, code piped into
+  shells, inline interpreter code naming the path and unparseable scripts.
+  Steps in a non-POSIX shell are not parsed: any mention of the path counts.
+  It is not a sandbox: a rewrite hidden on purpose is the documented limit.
+- sieve#24 (#40, REQ-037): README wiring against config drift (a weekly
+  check-graph, observe on full runs, a merged-PR replay), with a planted
+  move control.
+
+Evidence:
+- a fresh-context adversarial reviewer ran four passes: 21, 12 and 12
+  reproduced findings, then 7 groups (mostly false refusals);
+- the automated commit security review ran on each of 10 pushes and found
+  34 more;
+- every finding was fixed with a unit control or documented as a limit;
+- the always-true and always-false mutants of `may_write` are killed;
+- gale's L18 probe on its real tree, rerun at each head: 74 of 82 jobs
+  scoped, 0 writes under gale/ among them, every planted write refused;
+- fmt, clippy and the full suite pass on the PR head ae4bf39 and on main
+  9ca4a4a.
