@@ -720,6 +720,40 @@ artifacts:
     links:
       - {type: constraint-satisfies, target: SC-005}
 
+  - id: REQ-038
+    type: requirement
+    title: A later run step rewrites a checkout path only when one command writes and names it
+    status: implemented
+    release: v0.4.4
+    description: >
+      sieve#41. For a local uses: resolved through an earlier same-repository
+      actions/checkout path (sieve#36), a later run: step distrusts that path
+      only when one of its simple commands is a writer, as the command name or
+      after a wrapper (file and git commands other than read-only git
+      subcommands and options, docker run/cp, cmake -E and build trees, gh
+      downloads and checkouts, GIT_DIR/GIT_WORK_TREE honoured, in-place sed,
+      perl, yq or awk, sort -o, a find that deletes or executes, a
+      redirection) and names the path: literally as a path component, through
+      a variable assigned a path naming it (workflow, job or step env:, the
+      script, a for loop, an array, an expansion operand), or by running in it
+      (cd, pushd, working-directory:, defaults). Shell comments, reads, branch
+      names and other words do not count. Fails closed: an unassigned or
+      indirect variable, an expression or ~ in a written path, a cd to one, a
+      command name in an unknown variable naming the path, code piped into a
+      shell, xargs or parallel feeding a writer, sh -c and eval (parsed as
+      scripts), inline interpreter code naming the path, and an unparseable
+      script (unclosed quote, substitution or here-document) count as a
+      rewrite. A non-POSIX shell (pwsh, cmd, a Windows runner without shell:)
+      is not parsed: any mention of the path counts. An output flag (-o,
+      --output, --target, --prefix, ...) naming the path counts for any tool. A program that writes into the path on its own is not seen.
+    fields:
+      priority: should
+      category: functional
+      review: fresh-context adversarial review 2026-11-25 of 7206093 reproduced 21 findings (11 regressions, 5 gaps, 1 hang, false refusals); all fixed with unit controls; second pass on 99672bd reproduced 12 more, the commit security review 4 on 99672bd, 5 on 8143d2b, 3 on a5a3bdd and 2 on 05fd311; third pass on a5a3bdd reproduced 12 more, the commit security review 5 on ffe06e0, a fourth pass on ffe06e0 mostly false refusals, the commit security review 3 on 05d3492 4 on 10bac91 3 on e4b19b0, 2 on c655133 and 3 on b2e95cf (pip dropped from the read-only modules), all fixed with controls; always-true and always-false mutants killed; gale L18 probe 74/82, no false skip
+    links:
+      - {type: constraint-satisfies, target: SC-006}
+      - {type: derives-from, target: REQ-035}
+
   - id: FEAT-001
     type: feature
     title: sieve classify, graph and check-graph CLI
@@ -881,6 +915,7 @@ artifacts:
       - {type: satisfies, target: REQ-027}
       - {type: satisfies, target: REQ-035}
       - {type: satisfies, target: REQ-036}
+      - {type: satisfies, target: REQ-038}
 
   - id: FEAT-010
     type: feature

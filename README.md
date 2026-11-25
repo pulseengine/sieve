@@ -168,15 +168,46 @@ composite actions and local reusable workflows are inlined, recursively (a
 `./<p>/...` path after a same-repository `actions/checkout` with `path: <p>`
 earlier in the job resolves to the repository's own `./...`); a
 local `uses:` that resolves to no tracked file, or sits under a path checked
-out from another repository or ref (or rewritten by a later step: a file or
-git command naming it or run in it, or an action input pointing into it), or follows
+out from another repository or ref (or rewritten by a later step: see below), or follows
 a checkout sieve cannot model (a fork, an expression or `..` path), a linter job gated by an
 `if:` that is not the classifier form, or a linter step behind its own
 step-level gate makes the edit run everything. Remote actions and remote
 reusable workflows are not inlined. A step that rewrites the workspace root (a `git
 checkout` of another ref before a local `uses:`) is not detected. An action
 input that rewrites a checked-out path is seen only when its key is
-path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). Only those names are detected: any other check that reads
+path-like (`path`, `dest`, `dir`, `cwd`, `*-dir`, ...). A later `run:` step rewrites the path
+when one of its commands is a writer (git other than its read-only
+subcommands and options, rm, mv, cp, tar, rsync, curl, an in-place `sed`,
+`perl`, `yq` or `awk`, `sort -o`, `docker run`/`cp`, `cmake -E` or its build
+and install trees, `gh` downloads and checkouts, a redirection; as the command
+name or anywhere after a wrapper such as `sudo -u x` or `timeout 5m`) and names
+the path or runs in it. A writer's name as a mere argument (`grep -q zip`,
+`west sdk install`) is not a writer; a writer word after an unknown command (`with-device rm`)
+counts when a later word names the path outright. Any tool's output flag
+(`-o`, `--output`, `--target`, `--prefix`, `--dest`, ...) naming the path
+outright counts (`ncc build -o p/dist`). A build directory (`--build-dir`, `cmake -B`) is
+a program's own output, not an output flag. Data tools that run another
+command (`npm exec`, `yarn dlx`, `go run`, `bazel run`) are scanned like
+wrappers. A cwd in the path counts for extractors, clones and downloads
+without an output flag, and for any writer with a relative operand. A step whose shell is not bash or sh
+(`shell: pwsh`, or a Windows runner without `shell:`) is not parsed: any
+mention of the path counts; a `runs-on` expression applies both. The path is named: literally,
+through a variable assigned a path naming it (step, job or workflow `env:`,
+the script, a `for` loop, an array, an expansion operand), or by running in
+it (`cd`, `working-directory:`). Shell comments, reads (`grep`, `cat`,
+`-s "$GALE_ROOT"`), branch names and `gh -R owner/repo` do not count
+(sieve#41). An unassigned or indirect variable, an expression or `~` in a
+written path, a `cd` to one, code piped into a shell, `xargs` feeding a
+writer, `sh -c` and `eval` code, inline interpreter code naming the path, and
+an unparseable script (an unclosed quote, substitution or here-document)
+count as a rewrite; a source path counts like a destination. A program that
+writes into the path on its own (`make`, `cargo`, `west`, `source x.sh`) is
+not seen. The scanner is built for honest scripts and fails closed on
+what it cannot place; it is not a sandbox. A rewrite hidden on purpose (a
+program or a downloaded script that writes the path, or code assembled at run
+time) is not seen, the same limit as a program that writes on its own. The
+workflow edit that adds such a step is itself scoped to the job it edits, so
+that job runs on that pull request. Only the linter names above are detected: any other check that reads
 `.github/` (a script, a `make` target, another tool) needs its class to claim
 `.github/` (`hand = [".github/"]`) when scoping is on. check-graph counts such a claim
 under scoping.

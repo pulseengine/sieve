@@ -1401,7 +1401,28 @@ fn get_ci<'a>(y: &'a Yaml, name: &str) -> Option<&'a Yaml> {
 /// checked out from another repository, after a checkout whose path is an
 /// expression, or when another repository was checked out at the root. The
 /// job-level `uses:` (a reusable workflow) is returned as is.
-fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, String> {
+fn checkout_seeds(
+    job: &Yaml,
+    wf_default_wd: &str,
+    wf_default_shell: Option<&str>,
+    wf_env: &[(String, String)],
+) -> Result<Vec<Vec<String>>, String> {
+    // the shell a `run:` step without its own gets (sieve#41)
+    let job_shell = get(job, "defaults")
+        .and_then(|d| get(d, "run"))
+        .and_then(|r| get_ci(r, "shell"))
+        .map(py_str);
+    let runs_on = get(job, "runs-on")
+        .map(|r| {
+            let mut s = String::new();
+            flatten(r, &mut s);
+            if s.is_empty() {
+                py_str(r)
+            } else {
+                s
+            }
+        })
+        .unwrap_or_default();
     // the working directory a `run:` step without its own gets
     let default_wd = get(job, "defaults")
         .and_then(|d| get(d, "run"))
@@ -1421,7 +1442,6 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
     // checkout path -> checked out from this repository?
     let mut paths: BTreeMap<String, bool> = BTreeMap::new();
     let mut unknown = false;
-    let touches = Regex::new(r"\b(git|rm|mv|cp|tar|curl|wget|rsync|unzip)\b").unwrap();
     let drive = Regex::new(r"^([A-Za-z]:|//)").unwrap();
     let path_key = Regex::new(
         r"(?i)^(path|paths|dest|destination|dir|directory|target|working-directory|output|out|into|location|cwd|folder|root)$|-(dir|path|paths|directory|folder|root)$",
@@ -1549,19 +1569,19 @@ fn checkout_seeds(job: &Yaml, wf_default_wd: &str) -> Result<Vec<Vec<String>>, S
                 let wd = get_ci(st, "working-directory")
                     .map(py_str)
                     .unwrap_or_else(|| default_wd.to_string());
-                if touches.is_match(&run) {
-                    let blind = !wd.is_empty() && unplaceable(&wd);
-                    for (p, same) in paths.iter_mut() {
-                        if !p.is_empty()
-                            && (blind
-                                || run
-                                    .to_lowercase()
-                                    .replace('\\', "/")
-                                    .contains(&p.to_lowercase())
-                                || hits(&wd, p, true))
-                        {
-                            *same = false;
-                        }
+                // sieve#41: a command that writes and names the path (see runscan)
+                let mut env: Vec<(String, String)> = wf_env.to_vec();
+                for scope in [get(job, "env"), get(st, "env")] {
+                    env.extend(entries(scope).into_iter().map(|(k, v)| (k, py_str(v))));
+                }
+                let explicit = get_ci(st, "shell")
+                    .map(py_str)
+                    .or_else(|| job_shell.clone())
+                    .or_else(|| wf_default_shell.map(str::to_string));
+                let shell = crate::runscan::shell_of(explicit.as_deref(), &runs_on);
+                for (p, same) in paths.iter_mut() {
+                    if !p.is_empty() && crate::runscan::may_write_in(&run, &env, &wd, p, shell) {
+                        *same = false;
                     }
                 }
             }
@@ -1666,12 +1686,20 @@ pub fn linter_classes(
             .and_then(|r| get_ci(r, "working-directory"))
             .map(py_str)
             .unwrap_or_default();
+        let wf_default_shell = get(&wf, "defaults")
+            .and_then(|d| get(d, "run"))
+            .and_then(|r| get_ci(r, "shell"))
+            .map(py_str);
+        let wf_env: Vec<(String, String)> = entries(get(&wf, "env"))
+            .into_iter()
+            .map(|(k, v)| (k, py_str(v)))
+            .collect();
         let jobs: BTreeMap<String, &Yaml> = entries(get(&wf, "jobs")).into_iter().collect();
         for (jid, job) in &jobs {
             let mut own = String::new();
             flatten(job, &mut own);
             // sieve#36: local `uses:` resolved through the job's checkout paths
-            let per = checkout_seeds(job, &wf_default_wd)
+            let per = checkout_seeds(job, &wf_default_wd, wf_default_shell.as_deref(), &wf_env)
                 .map_err(|e| format!("{path}: job {jid}: {e}"))?;
             let full = own + &expand(per.concat(), actions, &wf_by_path, &mut BTreeSet::new())?;
             let per_step: &[Vec<String>] = if has(job, "uses") {
