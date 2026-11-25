@@ -1236,6 +1236,10 @@ impl Scan {
             "--destination",
             "--install-dir",
             "--root",
+            "--output-file",
+            "--log-file",
+            "--log",
+            "--report",
         ];
         words.iter().enumerate().any(|(i, a)| {
             FLAGS.iter().any(|f| {
@@ -1865,14 +1869,6 @@ impl Scan {
                             // formatters and fixers only in their check modes
                             "black" => has("--check") || has("--diff"),
                             "isort" => has("--check-only") || has("--check") || has("--diff"),
-                            "ruff" => {
-                                !rest.iter().any(|a| {
-                                    a.starts_with("--fix")
-                                        || a.starts_with("--unsafe-fixes")
-                                        || a.starts_with("--add-noqa")
-                                }) && (rest.iter().any(|a| a == "check")
-                                    || (rest.iter().any(|a| a == "format") && has("--check")))
-                            }
                             // pip reads and installs into site-packages unless a
                             // destination is given
                             "pip" => pip_read_only(rest),
@@ -2068,24 +2064,47 @@ fn pip_read_only(args: &[String]) -> bool {
     if !matches!(sub, Some("install" | "list" | "show" | "freeze" | "check")) {
         return false;
     }
-    const DEST: &[&str] = &[
-        "--target",
-        "--dest",
-        "--wheel-dir",
-        "--prefix",
-        "--root",
-        "--src",
-    ];
-    !after.iter().any(|a| {
+    // fail closed: only known-safe options (and the values of those that
+    // take one: a requirements file, an index URL, a constraints file)
+    let mut i = 0;
+    while i < after.len() {
+        let a = after[i].as_str();
+        if !a.starts_with('-') {
+            i += 1;
+            continue;
+        }
         let opt = a.split('=').next().unwrap_or(a);
-        (!opt.starts_with("--")
-            && opt.starts_with('-')
-            && opt[1..].chars().any(|c| matches!(c, 't' | 'd' | 'w')))
-            || (opt.starts_with("--")
-                && opt.len() >= 4
-                && opt != "--pre"
-                && DEST.iter().any(|d| d.starts_with(opt)))
-    })
+        match opt {
+            "-q"
+            | "-qq"
+            | "-v"
+            | "-vv"
+            | "-U"
+            | "--upgrade"
+            | "--quiet"
+            | "--verbose"
+            | "--no-deps"
+            | "--pre"
+            | "--user"
+            | "--require-hashes"
+            | "--no-cache-dir"
+            | "--disable-pip-version-check"
+            | "--no-input"
+            | "--break-system-packages"
+            | "--only-binary"
+            | "--no-binary"
+            | "--prefer-binary"
+            | "--outdated"
+            | "--uptodate"
+            | "--format" => i += 1,
+            "-r" | "--requirement" | "-c" | "--constraint" | "-i" | "--index-url"
+            | "--extra-index-url" | "--trusted-host" => {
+                i += if a.contains('=') { 1 } else { 2 };
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The writer at the first of `heads` writes only the paths its operands
@@ -2524,7 +2543,6 @@ mod tests {
             "ctest -R install --test-dir gale/build",
             "python -m pip install -r gale/requirements.txt",
             "python3 -m pytest gale/tests",
-            "python -m pip install -e ./gale",
             "chmod +x gale/gradlew && ./gale/gradlew build",
             "$CC -o /tmp/x main.c",
             "su runner -l --shell=/bin/bash -c 'echo ok'",
@@ -2752,6 +2770,11 @@ mod tests {
             "python -m pip install -tgale/vendor x",
             "python -m pip install --tar=gale/vendor x",
             "python -m pip download gale/x",
+            // commit security review of c655133
+            "python -m pip install -e ./gale",
+            "python -m pip install --log gale/pip.log x",
+            "python -m ruff check --output-file gale/action.yml .",
+            "python -m ruff check gale",
             "go run ./tools/gen -o gale/.github/actions/x/action.yml",
             "pip install --target gale/vendor -r requirements.txt",
         ] {
