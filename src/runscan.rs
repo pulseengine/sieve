@@ -1689,10 +1689,23 @@ impl Scan {
             // data tools that run another command (`npm exec`, `yarn dlx`,
             // `go run`, `bazel run`, `dotnet tool run`, `cargo run`) are open
             let runs_other = real.is_some_and(|r| {
-                w[r + 1..]
-                    .iter()
-                    .take(3)
-                    .any(|a| matches!(a.as_str(), "exec" | "run" | "dlx" | "x"))
+                // the subcommand, after global options (a value-taking global
+                // option may hide it: then any later run word counts)
+                let ops: Vec<&String> = w[r + 1..].iter().filter(|a| !a.starts_with('-')).collect();
+                let runner = |a: &str| matches!(a, "exec" | "run" | "dlx" | "x" | "tool" | "workspace" | "workspaces");
+                ops.iter().any(|a| runner(a))
+                    // `yarn <bin>` runs a package binary
+                    || (rname == "yarn"
+                        && ops.first().is_some_and(|a| {
+                            !matches!(
+                                a.as_str(),
+                                "install" | "add" | "remove" | "upgrade" | "up" | "build" | "test"
+                                    | "lint" | "why" | "info" | "init" | "config" | "cache" | "set"
+                                    | "dedupe" | "npm" | "pack" | "publish" | "version" | "plugin"
+                                    | "constraints" | "explain" | "link" | "unlink" | "patch"
+                                    | "rebuild" | "stage" | "outdated" | "audit" | "list" | "licenses"
+                            )
+                        }))
             });
             let open = (!treats_args_as_data(&rname) || runs_other)
                 && !is_interpreter(&rname)
@@ -1829,40 +1842,77 @@ impl Scan {
                 if is_interpreter(&b) {
                     // inline code, or code on stdin, here-documents and
                     // process substitutions: anything but a script file
-                    // `python -m mod` runs a module, like a script file
-                    let module = rest
-                        .iter()
-                        .take_while(|a| a.starts_with('-'))
-                        .any(|a| a == "-m");
+                    // `python -m mod`, `-mmod`, `-um mod`: a module, like a
+                    // script file
+                    let module_name: Option<String> = {
+                        let mut found = None;
+                        let mut it = rest.iter();
+                        while let Some(a) = it.next() {
+                            if !a.starts_with('-') || a.starts_with("--") {
+                                if a.starts_with("--") {
+                                    continue;
+                                }
+                                break;
+                            }
+                            if let Some(pos) = a[1..].find('m') {
+                                if a[1..1 + pos].chars().all(|x| x.is_ascii_alphabetic()) {
+                                    let after = &a[1 + pos + 1..];
+                                    found = Some(if after.is_empty() {
+                                        it.next().cloned().unwrap_or_default()
+                                    } else {
+                                        after.to_string()
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    };
+                    let module = module_name.is_some();
                     // (with -m the words after the module are its arguments)
                     let inline = !module && has_inline(rest);
                     // a module other than a read-only one, with an argument naming
                     // `p` outright, counts
-                    if module {
-                        let m = rest
-                            .iter()
-                            .skip_while(|a| a.as_str() != "-m")
-                            .nth(1)
-                            .map(|s| s.as_str())
-                            .unwrap_or("");
-                        let read_only = matches!(
-                            m.split('.').next().unwrap_or(""),
-                            "pytest"
-                                | "unittest"
-                                | "mypy"
-                                | "pylint"
-                                | "flake8"
-                                | "pip"
-                                | "coverage"
-                                | "doctest"
-                                | "pydoc"
-                                | "compileall"
-                                | "py_compile"
-                                | "build"
-                                | "black"
-                                | "ruff"
-                                | "isort"
-                        );
+                    if let Some(m) = module_name.as_deref() {
+                        let has = |f: &str| {
+                            rest.iter()
+                                .any(|a| a == f || a.starts_with(&format!("{f}=")))
+                        };
+                        let read_only = match m.split('.').next().unwrap_or("") {
+                            "pytest" | "unittest" | "mypy" | "pylint" | "flake8" | "coverage"
+                            | "doctest" | "pydoc" => true,
+                            // formatters and fixers only in their check modes
+                            "black" => has("--check") || has("--diff"),
+                            "isort" => has("--check-only") || has("--check") || has("--diff"),
+                            "ruff" => {
+                                !has("--fix")
+                                    && (rest.iter().any(|a| a == "check")
+                                        || (rest.iter().any(|a| a == "format") && has("--check")))
+                            }
+                            // pip reads and installs into site-packages unless a
+                            // destination is given
+                            "pip" => {
+                                rest.iter().any(|a| {
+                                    matches!(
+                                        a.as_str(),
+                                        "install" | "list" | "show" | "freeze" | "check"
+                                    )
+                                }) && ![
+                                    "-d",
+                                    "-w",
+                                    "-t",
+                                    "--dest",
+                                    "--wheel-dir",
+                                    "--target",
+                                    "--prefix",
+                                    "--root",
+                                    "--src",
+                                ]
+                                .iter()
+                                .any(|f| has(f))
+                            }
+                            _ => false,
+                        };
                         if !read_only && rest.iter().any(|a| self.names_outright(a)) {
                             hit = true;
                         }
@@ -2015,11 +2065,21 @@ fn targets_explicit(words: &[String], heads: &[usize]) -> bool {
         | "tee" | "ditto" | "rsync" | "scp" | "sponge" | "shred" | "truncate" | "rename"
         | "dos2unix" | "unix2dos" | "sd" | "openssl" | "sed" | "gsed" | "perl" | "ruby" | "yq"
         | "sort" => true,
-        "curl" => rest.iter().any(|a| {
-            a == "-o"
-                || a.starts_with("--output")
-                || (a.starts_with('-') && !a.starts_with("--") && a.ends_with('o'))
-        }),
+        // -o is explicit; -O and --remote-name write the cwd unless
+        // --output-dir is given
+        "curl" => {
+            let remote = rest.iter().any(|a| {
+                a.starts_with("--remote-name")
+                    || (a.starts_with('-') && !a.starts_with("--") && a.contains('O'))
+            });
+            let dir = rest.iter().any(|a| a.starts_with("--output-dir"));
+            (!remote || dir)
+                && rest.iter().any(|a| {
+                    a == "-o"
+                        || a.starts_with("--output")
+                        || (a.starts_with('-') && !a.starts_with("--") && a.ends_with('o'))
+                })
+        }
         "wget" => rest.iter().any(|a| {
             matches!(a.as_str(), "-O" | "-P")
                 || a.starts_with("--output-document")
@@ -2612,6 +2672,16 @@ mod tests {
             // commit security review of 05d3492
             "npm exec -- rm -rf gale",
             "yarn dlx rimraf gale",
+            // commit security review of 10bac91
+            "python -m black gale",
+            "python -m ruff check --fix gale",
+            "python -m isort gale",
+            "python -m compileall gale",
+            "python -mpylint_fixer gale/x.py",
+            "python -um mytool gale/action.yml",
+            "python -m pip download -d gale/vendor x",
+            "npm --prefix /tmp exec -- rm -rf gale",
+            "yarn rimraf gale",
             "go run ./tools/gen -o gale/.github/actions/x/action.yml",
             "pip install --target gale/vendor -r requirements.txt",
         ] {

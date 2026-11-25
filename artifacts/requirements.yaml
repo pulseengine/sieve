@@ -749,7 +749,7 @@ artifacts:
     fields:
       priority: should
       category: functional
-      review: fresh-context adversarial review 2026-11-25 of 7206093 reproduced 21 findings (11 regressions, 5 gaps, 1 hang, false refusals); all fixed with unit controls; second pass on 99672bd reproduced 12 more, the commit security review 4 on 99672bd, 5 on 8143d2b, 3 on a5a3bdd and 2 on 05fd311; third pass on a5a3bdd reproduced 12 more, the commit security review 5 on ffe06e0, a fourth pass on ffe06e0 mostly false refusals, the commit security review 3 on 05d3492, all fixed with controls; always-true and always-false mutants killed; gale L18 probe 74/82, no false skip
+      review: fresh-context adversarial review 2026-11-25 of 7206093 reproduced 21 findings (11 regressions, 5 gaps, 1 hang, false refusals); all fixed with unit controls; second pass on 99672bd reproduced 12 more, the commit security review 4 on 99672bd, 5 on 8143d2b, 3 on a5a3bdd and 2 on 05fd311; third pass on a5a3bdd reproduced 12 more, the commit security review 5 on ffe06e0, a fourth pass on ffe06e0 mostly false refusals, the commit security review 3 on 05d3492 and 4 on 10bac91, all fixed with controls; always-true and always-false mutants killed; gale L18 probe 74/82, no false skip
     links:
       - {type: constraint-satisfies, target: SC-006}
       - {type: derives-from, target: REQ-035}
