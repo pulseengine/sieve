@@ -262,9 +262,10 @@ suite on the PR head 54ca189 and on main cc3e431.
   move control.
 
 Evidence:
-- a fresh-context adversarial reviewer ran four passes and reproduced 21,
-  12, 12 and 14 findings;
-- the automated commit security review ran on each push and found 29 more;
+- a fresh-context adversarial reviewer ran four passes: 21, 12 and 12
+  reproduced findings, then 7 groups (mostly false refusals);
+- the automated commit security review ran on each of 10 pushes and found
+  34 more;
 - every finding was fixed with a unit control or documented as a limit;
 - the always-true and always-false mutants of `may_write` are killed;
 - gale's L18 probe on its real tree, rerun at each head: 74 of 82 jobs
