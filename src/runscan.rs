@@ -1869,9 +1869,8 @@ impl Scan {
                             // formatters and fixers only in their check modes
                             "black" => has("--check") || has("--diff"),
                             "isort" => has("--check-only") || has("--check") || has("--diff"),
-                            // pip reads and installs into site-packages unless a
-                            // destination is given
-                            "pip" => pip_read_only(rest),
+                            // (pip is not read-only: requirements files, local
+                            // paths and PIP_* variables can direct its writes)
                             _ => false,
                         };
                         if !read_only
@@ -2045,66 +2044,6 @@ fn python_mode(args: &[String]) -> (Option<String>, bool) {
         i += if skip_next { 2 } else { 1 };
     }
     (None, false)
-}
-
-/// `python -m pip` that reads or installs into site-packages: the
-/// subcommand (the first operand) is one of those, and no destination option
-/// is given, attached (`-tdir`) or abbreviated (`--tar=dir`).
-fn pip_read_only(args: &[String]) -> bool {
-    // the words after `-m pip`
-    let after: Vec<&String> = args
-        .iter()
-        .skip_while(|a| !a.ends_with("pip") && a.as_str() != "pip")
-        .skip(1)
-        .collect();
-    let sub = after
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .map(|s| s.as_str());
-    if !matches!(sub, Some("install" | "list" | "show" | "freeze" | "check")) {
-        return false;
-    }
-    // fail closed: only known-safe options (and the values of those that
-    // take one: a requirements file, an index URL, a constraints file)
-    let mut i = 0;
-    while i < after.len() {
-        let a = after[i].as_str();
-        if !a.starts_with('-') {
-            i += 1;
-            continue;
-        }
-        let opt = a.split('=').next().unwrap_or(a);
-        match opt {
-            "-q"
-            | "-qq"
-            | "-v"
-            | "-vv"
-            | "-U"
-            | "--upgrade"
-            | "--quiet"
-            | "--verbose"
-            | "--no-deps"
-            | "--pre"
-            | "--user"
-            | "--require-hashes"
-            | "--no-cache-dir"
-            | "--disable-pip-version-check"
-            | "--no-input"
-            | "--break-system-packages"
-            | "--only-binary"
-            | "--no-binary"
-            | "--prefer-binary"
-            | "--outdated"
-            | "--uptodate"
-            | "--format" => i += 1,
-            "-r" | "--requirement" | "-c" | "--constraint" | "-i" | "--index-url"
-            | "--extra-index-url" | "--trusted-host" => {
-                i += if a.contains('=') { 1 } else { 2 };
-            }
-            _ => return false,
-        }
-    }
-    true
 }
 
 /// The writer at the first of `heads` writes only the paths its operands
@@ -2541,7 +2480,6 @@ mod tests {
             "cmake -S . -B build -D CMAKE_INSTALL_PREFIX=gale",
             "pytest -k install gale/tests",
             "ctest -R install --test-dir gale/build",
-            "python -m pip install -r gale/requirements.txt",
             "python3 -m pytest gale/tests",
             "chmod +x gale/gradlew && ./gale/gradlew build",
             "$CC -o /tmp/x main.c",
@@ -2772,6 +2710,7 @@ mod tests {
             "python -m pip download gale/x",
             // commit security review of c655133
             "python -m pip install -e ./gale",
+            "python -m pip install -r gale/requirements.txt",
             "python -m pip install --log gale/pip.log x",
             "python -m ruff check --output-file gale/action.yml .",
             "python -m ruff check gale",
@@ -2826,7 +2765,7 @@ mod tests {
             "gale",
             "gale"
         ));
-        assert!(!may_write("python -m pip install .", &[], "gale", "gale"));
+        assert!(may_write("python -m pip install .", &[], "gale", "gale"));
         assert!(may_write("cp dist/x out/", &[], "gale", "gale"));
         // PowerShell and other shells: any mention of the path
         use super::{may_write_in, shell_of, Shell};
