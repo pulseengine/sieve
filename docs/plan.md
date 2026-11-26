@@ -272,3 +272,19 @@ Evidence:
   scoped, 0 writes under gale/ among them, every planted write refused;
 - fmt, clippy and the full suite pass on the PR head ae4bf39 and on main
   9ca4a4a.
+
+## v0.4.5 (prepared 2026-11-26)
+
+- sieve#49 (#50, REQ-014): in `.github/required-contexts.txt` a line whose
+  first non-blank character is `#` is a comment, not a required context. A
+  file left with no context is refused (exit 3) instead of passing
+  vacuously. 0.3.0 to 0.4.4 read a "mirrors protection" header as a context
+  no job hosts. Reported by warte.
+- CI and toolchain (#45, #48): grouped monthly Dependabot; rust-toolchain
+  pinned to df2a88e9 with toolchain 1.100.0; varve layer 2026.11.43 and CI
+  rivet v0.43.3.
+
+Evidence: the control `comment_lines_in_required_contexts_are_not_contexts`
+fails on the 0.4.4 `src/workflows.rs` and passes on the fix; fmt, clippy and
+the full suite (139 tests) pass locally; Test and rivet validate pass on the
+PR head b18859c and on main 9327979.
