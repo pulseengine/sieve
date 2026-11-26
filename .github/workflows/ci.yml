@@ -16,13 +16,13 @@ defaults:
 
 env:
   CARGO_TERM_COLOR: never
-  # The rivet release CI validates with; matches the varve.toml layer (2026.11.23).
-  RIVET_VERSION: v0.42.2
-  # sha256 of rivet-v0.42.2-x86_64-unknown-linux-gnu.tar.gz, recorded on
-  # 2026-11-18 from the release's SHA256SUMS.txt after `cosign verify-blob`
+  # The rivet release CI validates with; matches the varve.toml layer (2026.11.43).
+  RIVET_VERSION: v0.43.3
+  # sha256 of rivet-v0.43.3-x86_64-unknown-linux-gnu.tar.gz, recorded on
+  # 2026-11-26 from the release's SHA256SUMS.txt after `cosign verify-blob`
   # of that file against the rivet release workflow identity. Pinned here so a
   # replaced release asset fails the job instead of being trusted with its own sums.
-  RIVET_SHA256: 79dddaf2c084a6be43865fc061b72131ba81b90e8edb2a3bd8825d1b653d684d
+  RIVET_SHA256: ff05c74846f6c3398a59c715c9226d7ef3ad9dbe426d68ba66243af494e1630e
   # wasmtime runs the WASI component in the Test job (REQ-031). It is not in
   # the pinned pulseengine layer. sha256 of wasmtime-v50.0.3-x86_64-linux.tar.xz,
   # recorded on 2026-11-20: GitHub's asset digest matched a local download.
