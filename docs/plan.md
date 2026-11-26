@@ -2,7 +2,7 @@
 
 ## Step 1: bootstrap (done in this commit)
 
-rivet 0.42.2 pinned through varve (realm pulseengine, layer 2026.11.23).
+rivet 0.43.3 pinned through varve (realm pulseengine, layer 2026.11.43).
 STPA: 4 losses, 6 hazards, 6 constraints. STPA-Sec: 2 losses, 3 hazards,
 3 constraints. 18 top-level requirements, each linked to a constraint;
 5 design decisions. `rivet validate`: PASS, 0 warnings.
