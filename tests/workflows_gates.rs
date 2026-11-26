@@ -1020,3 +1020,28 @@ fn an_always_gate_on_a_non_required_need_must_read_its_result() {
     )]);
     assert!(bad.is_empty(), "plants not caught:\n{}", bad.join("\n"));
 }
+
+// A `#` line in required-contexts.txt is a comment: a "mirrors protection"
+// header must not become a phantom required context (warte). Before the fix
+// the header was read as a context no job hosts, and the baseline failed.
+// rivet: verifies REQ-014
+// rivet: verifies FEAT-002
+#[test]
+fn comment_lines_in_required_contexts_are_not_contexts() {
+    let header =
+        "# mirrors protection on main (gh api .../protection)\n  # indented note\n\nThe Gate\n";
+    let o = run("contexts-comment", &W::base(), header);
+    assert_eq!(o.code, Some(0), "{}", o.stdout);
+    assert_eq!(o.json["pass"], true);
+    // the same file without the header is the baseline: same verdict, same checks
+    let base = run("contexts-comment-base", &W::base(), ONE);
+    assert_eq!(o.json["checks"], base.json["checks"], "{}", o.stdout);
+    // a file left with no context is refused, not a vacuous pass
+    let o = run(
+        "contexts-only-comments",
+        &W::base(),
+        "# mirrors protection\n\n",
+    );
+    assert_eq!(o.code, Some(3), "{}", o.stdout);
+    assert_eq!(o.json["pass"], false);
+}
