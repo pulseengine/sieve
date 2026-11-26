@@ -2180,13 +2180,25 @@ pub fn cmd_check_workflows(
     let reqfile = at(req_rel);
     let mut r = Report::default();
 
+    // One context per line; a line whose first non-blank character is `#` is
+    // a comment (a "mirrors protection" header), never a context. A file with
+    // no context left is refused: an empty list would pass vacuously.
     let contexts: Vec<String> = match std::fs::read_to_string(&reqfile) {
-        Ok(t) => t
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect(),
+        Ok(t) => {
+            let c: Vec<String> = t
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string)
+                .collect();
+            if c.is_empty() {
+                r.refuse(
+                    &reqfile.to_string_lossy(),
+                    "required contexts: no context listed (blank and # lines only)".to_string(),
+                );
+            }
+            c
+        }
         Err(e) => {
             r.refuse(
                 &reqfile.to_string_lossy(),

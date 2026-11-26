@@ -361,7 +361,9 @@ directions. Safety analysis, requirements and design decisions are in
 
 `sieve check-workflows --config sieve.toml` checks a consumer's workflows
 against `.github/required-contexts.txt` (exit 0 pass, 1 fail, 2 usage,
-3 refused):
+3 refused). The file lists one context per line. A line starting with `#`
+is a comment, such as a header noting that the file mirrors branch
+protection. A file with no context left is refused. The gates are:
 
 - (a) every workflow hosting a required context runs on `pull_request`
   (no `paths:`/`paths-ignore:` key, even empty; no branch or `types:`
