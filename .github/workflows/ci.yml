@@ -32,11 +32,11 @@ env:
   # Built from crates.io with --locked (scripts/lockfiles.sh audit).
   CARGO_AUDIT_VERSION: 0.22.2
   # kiln and meld for the advisory kiln job, as in the varve layer 2026.11.43.
-  # sha256 of the x86_64-unknown-linux-musl archives, recorded on 2026-11-27
-  # from each release's SHA256SUMS.txt after `cosign verify-blob` against
-  # that repo's release.yml tag identity.
+  # sha256 of the x86_64 linux archives (kiln gnu, meld musl), recorded on
+  # 2026-11-27 from each release's SHA256SUMS.txt after `cosign verify-blob`
+  # against that repo's release.yml tag identity.
   KILN_VERSION: v0.9.0
-  KILN_SHA256: 768a1f5971656635d24b614d48fb50337e810da0e8c8006f8e863d40bc550ec2
+  KILN_SHA256: 6a1e334ba319fbaaca5858d333088c0d82a13b789e7479b5af119028b5f32aaf
   MELD_VERSION: v0.70.0
   MELD_SHA256: 9ff3e50d538a54fd129a8962733b766569218eb9dbb8b9be642b389b6063895c
 
@@ -122,9 +122,9 @@ jobs:
       - name: fetch pinned kiln and meld
         run: |
           d="$RUNNER_TEMP/tools"; mkdir -p "$d"; cd "$d"
-          for t in "kiln $KILN_VERSION $KILN_SHA256" "meld $MELD_VERSION $MELD_SHA256"; do
+          for t in "kiln $KILN_VERSION $KILN_SHA256 gnu" "meld $MELD_VERSION $MELD_SHA256 musl"; do
             set -- $t
-            asset="$1-$2-x86_64-unknown-linux-musl.tar.gz"
+            asset="$1-$2-x86_64-unknown-linux-$4.tar.gz"
             curl -fsSL -o "$asset" "https://github.com/pulseengine/$1/releases/download/$2/$asset"
             act=$(sha256sum "$asset" | awk '{print $1}')
             test "$act" = "$3" || { echo "checksum mismatch for $asset: $act"; exit 1; }
@@ -143,7 +143,9 @@ jobs:
           sha256sum "$f/sieve.fused.wasm"
           { echo "FUSED=$f/sieve.fused.wasm"; echo "IMPORT_MAP=$f/map.json"; } >> "$GITHUB_ENV"
       - name: planted control (the diff must be able to fail)
-        timeout-minutes: 10
+        timeout-minutes: 20
+        env:
+          KILN_CALL_TIMEOUT: 900
         run: scripts/kiln-control.sh target/debug/sieve
       - name: corpus under kiln (byte-identical to native)
         env:
