@@ -143,6 +143,7 @@ jobs:
           sha256sum "$f/sieve.fused.wasm"
           { echo "FUSED=$f/sieve.fused.wasm"; echo "IMPORT_MAP=$f/map.json"; } >> "$GITHUB_ENV"
       - name: planted control (the diff must be able to fail)
+        timeout-minutes: 10
         run: scripts/kiln-control.sh target/debug/sieve
       - name: corpus under kiln (byte-identical to native)
         env:

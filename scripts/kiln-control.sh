@@ -19,7 +19,10 @@ printf '[package]\nname = "a"\nversion = "0.1.0"\n' > "$t/a/Cargo.toml"
 printf 'pub fn a() {}\n' > "$t/a/src/lib.rs"
 printf '[class.a]\ncargo = ["a/Cargo.toml"]\n[class.b]\nhand = ["b/"]\n' > "$t/sieve.toml"
 cd "$t"
-"$here/kiln-as-wasmtime.sh" run --dir "$t::." "$FUSED" classify --config sieve.toml --paths a/src/lib.rs > kiln.json
+s=$(date +%s)
+rc=0; "$here/kiln-as-wasmtime.sh" run --dir "$t::." "$FUSED" classify --config sieve.toml --paths a/src/lib.rs > kiln.json 2> kiln.err || rc=$?
+echo "kiln-control: kiln call exited $rc after $(($(date +%s) - s)) s"; cat kiln.err >&2
+[ "$rc" = 0 ] || die "kiln exited $rc"
 "$native" classify --config sieve.toml --paths a/src/lib.rs > native.json
 "$native" classify --config sieve.toml --paths .github/workflows/ci.yml > plant.json
 for f in kiln.json native.json plant.json; do

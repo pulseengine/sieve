@@ -32,4 +32,7 @@ while [ $# -gt 0 ]; do
   first=0
 done
 for a in "${g[@]}"; do kargs+=(--wasi-arg "$a"); done
-exec "$KILN" "${kargs[@]}" "$FUSED"
+# stdin is closed as under the harness (Command::output), and each call is
+# bounded, so a hang fails the job with output instead of at the job timeout.
+to=$(command -v timeout || command -v gtimeout || true)
+exec ${to:+"$to" "${KILN_CALL_TIMEOUT:-300}"} "$KILN" "${kargs[@]}" "$FUSED" </dev/null
