@@ -132,6 +132,14 @@ jobs:
           done
           echo "KILN=$(find "$d/kiln" -name kiln -type f | head -1)" >> "$GITHUB_ENV"
           echo "MELD=$(find "$d/meld" -name meld -type f | head -1)" >> "$GITHUB_ENV"
+      # DIAGNOSTIC for kiln#748, reverted before merge: time the 0.9.0
+      # asset's load (fused --version), then use kiln main (#737 fix).
+      - name: "diag kiln#748: build kiln main 3b977652"
+        run: |
+          echo "KILN090=$KILN" >> "$GITHUB_ENV"
+          cargo install --locked --root "$RUNNER_TEMP/kiln-main" --git https://github.com/pulseengine/kiln \
+            --rev 3b977652db209078bdf2b2619261041168d61354 kilnd --features "std,kiln-execution" --bin kiln
+          echo "KILN=$RUNNER_TEMP/kiln-main/bin/kiln" >> "$GITHUB_ENV"
       - name: build native and the component, fuse it
         run: |
           cargo build --locked
@@ -142,6 +150,13 @@ jobs:
             -o "$f/sieve.fused.wasm" --emit-import-map "$f/map.json"
           sha256sum "$f/sieve.fused.wasm"
           { echo "FUSED=$f/sieve.fused.wasm"; echo "IMPORT_MAP=$f/map.json"; } >> "$GITHUB_ENV"
+      - name: "diag kiln#748: fused sieve --version under 0.9.0 and main"
+        run: |
+          for k in "$KILN090" "$KILN"; do
+            s=$(date +%s); rc=0
+            timeout 600 "$k" --wasi --component --import-map "$IMPORT_MAP" --wasi-arg --version "$FUSED" </dev/null || rc=$?
+            echo "$("$k" --version): fused sieve --version exit $rc after $(($(date +%s) - s)) s"
+          done
       - name: planted control (the diff must be able to fail)
         timeout-minutes: 20
         env:
