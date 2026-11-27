@@ -5,6 +5,9 @@
 #   release-check.sh smoke BIN TAG           the packaged binary is that version,
 #                                            meets the CLI baseline, and
 #                                            classifies a fixture both ways
+#   release-check.sh smoke-wasm WASM TAG     the same gates for the WASI component,
+#                                            run under $WASMTIME with the working
+#                                            directory preopened as .
 #
 # Exit 0 = the gate holds, 1 = it does not, 2 = usage.
 set -euo pipefail
@@ -56,11 +59,37 @@ smoke() {
   printf '[class.a]\nsrcs = []\n' > "$t/bad.toml"
   rc=0; (cd "$t" && "$bin" classify --config bad.toml --paths x >/dev/null 2>&1) || rc=$?
   [ "$rc" = 2 ] || die "an invalid config exited $rc, not 2"
-  echo "release-check: $bin is sieve ${tag#v} and classifies the fixture both ways"
+  # The other documented codes: check-workflows refuses a missing required
+  # contexts file (3) and fails a context no workflow hosts (1).
+  mkdir -p "$t/.github/workflows"
+  printf 'on:\n  pull_request:\n  merge_group:\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$t/.github/workflows/w.yml"
+  rc=0; (cd "$t" && "$bin" check-workflows --config sieve.toml >/dev/null 2>&1) || rc=$?
+  [ "$rc" = 3 ] || die "a missing required contexts file exited $rc, not 3"
+  printf 'Nope\n' > "$t/.github/required-contexts.txt"
+  rc=0; (cd "$t" && "$bin" check-workflows --config sieve.toml >/dev/null 2>&1) || rc=$?
+  [ "$rc" = 1 ] || die "an unhosted required context exited $rc, not 1"
+  echo "release-check: $bin is sieve ${tag#v}, classifies the fixture both ways and exits 0, 1, 2 and 3 as documented"
+}
+
+# The component through a one-line wrapper, so every smoke gate above runs
+# unchanged: the working directory is preopened as `.`, and
+# cli-exit-with-code lets usage errors exit 2 as natively.
+smoke_wasm() {
+  local wasm=$1 tag=$2 w
+  case $wasm in /*) ;; *) wasm="$PWD/$wasm" ;; esac
+  [ -n "${WASMTIME:-}" ] || die "WASMTIME is not set"
+  [ -s "$wasm" ] || die "no component at $wasm"
+  # Without the exit-with-code import every failure reaches the host as 1.
+  grep -aq exit-with-code "$wasm" || die "$wasm does not import wasi:cli/exit exit-with-code"
+  w="$(mktemp -d)/sieve"
+  printf '#!/usr/bin/env bash\nexec "%s" run -S cli-exit-with-code=y --dir "$PWD::." "%s" "$@"\n' "$WASMTIME" "$wasm" > "$w"
+  chmod +x "$w"
+  smoke "$w" "$tag"
 }
 
 case "${1:-}" in
   version-guard) [ $# = 2 ] || exit 2; version_guard "$2" ;;
   smoke) [ $# = 3 ] || exit 2; smoke "$2" "$3" ;;
-  *) echo "usage: release-check.sh version-guard TAG | smoke BIN TAG" >&2; exit 2 ;;
+  smoke-wasm) [ $# = 3 ] || exit 2; smoke_wasm "$2" "$3" ;;
+  *) echo "usage: release-check.sh version-guard TAG | smoke BIN TAG | smoke-wasm WASM TAG" >&2; exit 2 ;;
 esac

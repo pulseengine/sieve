@@ -86,6 +86,13 @@ jobs:
           cargo test --locked --test corpus -- --nocapture | tee "$RUNNER_TEMP/component.log"
           # proves the component ran: native mode prints no skipped git cases
           grep -q '^55/55 corpus case(s) pass (19 git-mode case(s) not run)$' "$RUNNER_TEMP/component.log"
+      # The release smoke gate on the component the release ships: version,
+      # CLI baseline (usage errors exit 2, through exit-with-code) and the
+      # two-class fixture both ways, under the pinned wasmtime.
+      - name: component release smoke
+        run: |
+          v=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -1)
+          WASMTIME="$SIEVE_WASMTIME" scripts/release-check.sh smoke-wasm "$SIEVE_WASM" "v$v"
 
   rivet:
     name: rivet validate

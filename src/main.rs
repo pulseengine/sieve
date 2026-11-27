@@ -200,7 +200,25 @@ fn usage_error(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Under WASI p2, returning an `ExitCode` from `main` reaches the host as plain
+/// success or failure (exit 1), so a usage error (2) or a refusal (3) loses
+/// its code. `process::exit` uses wasi:cli/exit's exit-with-code (the host
+/// must allow it: wasmtime `-S cli-exit-with-code=y`), so the component exits
+/// with the native binary's codes.
 fn main() -> ExitCode {
+    let code = run();
+    #[cfg(target_os = "wasi")]
+    for n in 1..=3u8 {
+        if code == ExitCode::from(n) {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            std::process::exit(i32::from(n));
+        }
+    }
+    code
+}
+
+fn run() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
         None | Some("--help") | Some("-h") | Some("help") => {
