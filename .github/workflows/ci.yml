@@ -31,6 +31,14 @@ env:
   WASMTIME_SHA256: c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476
   # Built from crates.io with --locked (scripts/lockfiles.sh audit).
   CARGO_AUDIT_VERSION: 0.22.2
+  # kiln and meld for the advisory kiln job, as in the varve layer 2026.11.43.
+  # sha256 of the x86_64-unknown-linux-musl archives, recorded on 2026-11-27
+  # from each release's SHA256SUMS.txt after `cosign verify-blob` against
+  # that repo's release.yml tag identity.
+  KILN_VERSION: v0.9.0
+  KILN_SHA256: 768a1f5971656635d24b614d48fb50337e810da0e8c8006f8e863d40bc550ec2
+  MELD_VERSION: v0.70.0
+  MELD_SHA256: 9ff3e50d538a54fd129a8962733b766569218eb9dbb8b9be642b389b6063895c
 
 jobs:
   test:
@@ -94,6 +102,57 @@ jobs:
         run: |
           v=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -1)
           WASMTIME="$SIEVE_WASMTIME" scripts/release-check.sh smoke-wasm "$SIEVE_WASM" "v$v"
+
+  # Advisory (not a required check): the corpus through the meld-fused
+  # component under kiln, byte for byte against native, plus a planted
+  # control that must differ. kiln 0.9.0 predates its startup fix (about 7 s
+  # per call), so this job takes about half an hour until the layer moves.
+  # kiln-regression against kiln HEAD is kiln's own job (SR-129).
+  kiln:
+    name: kiln (advisory)
+    # Fork PRs never reach self-hosted runners (fail-closed same-repo guard).
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-15
+        with:
+          toolchain: 1.100.0
+          targets: wasm32-wasip2
+      - name: fetch pinned kiln and meld
+        run: |
+          d="$RUNNER_TEMP/tools"; mkdir -p "$d"; cd "$d"
+          for t in "kiln $KILN_VERSION $KILN_SHA256" "meld $MELD_VERSION $MELD_SHA256"; do
+            set -- $t
+            asset="$1-$2-x86_64-unknown-linux-musl.tar.gz"
+            curl -fsSL -o "$asset" "https://github.com/pulseengine/$1/releases/download/$2/$asset"
+            act=$(sha256sum "$asset" | awk '{print $1}')
+            test "$act" = "$3" || { echo "checksum mismatch for $asset: $act"; exit 1; }
+            mkdir -p "$1" && tar xzf "$asset" -C "$1"
+          done
+          echo "KILN=$(find "$d/kiln" -name kiln -type f | head -1)" >> "$GITHUB_ENV"
+          echo "MELD=$(find "$d/meld" -name meld -type f | head -1)" >> "$GITHUB_ENV"
+      - name: build native and the component, fuse it
+        run: |
+          cargo build --locked
+          CARGO_TARGET_DIR=target/wasi cargo build --locked --release --target wasm32-wasip2
+          "$KILN" --version; "$MELD" --version
+          f="$RUNNER_TEMP/fused"; mkdir -p "$f"
+          "$MELD" fuse --memory multi --reproducible target/wasi/wasm32-wasip2/release/sieve.wasm \
+            -o "$f/sieve.fused.wasm" --emit-import-map "$f/map.json"
+          sha256sum "$f/sieve.fused.wasm"
+          { echo "FUSED=$f/sieve.fused.wasm"; echo "IMPORT_MAP=$f/map.json"; } >> "$GITHUB_ENV"
+      - name: planted control (the diff must be able to fail)
+        run: scripts/kiln-control.sh target/debug/sieve
+      - name: corpus under kiln (byte-identical to native)
+        env:
+          SIEVE_WASMTIME: ${{ github.workspace }}/scripts/kiln-as-wasmtime.sh
+        run: |
+          start=$(date +%s)
+          SIEVE_WASM="$FUSED" cargo test --locked --test corpus -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/kiln.log"
+          grep -q '^55/55 corpus case(s) pass (19 git-mode case(s) not run)$' "$RUNNER_TEMP/kiln.log"
+          s=$(($(date +%s) - start))
+          echo "kiln $KILN_VERSION (before the startup fix, kiln#737): 55/55 paths-mode corpus cases byte-identical to native, ${s} s wall" >> "$GITHUB_STEP_SUMMARY"
 
   rivet:
     name: rivet validate
