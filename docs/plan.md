@@ -288,3 +288,22 @@ Evidence: the control `comment_lines_in_required_contexts_are_not_contexts`
 fails on the 0.4.4 `src/workflows.rs` and passes on the fix; fmt, clippy and
 the full suite (139 tests) pass locally; Test and rivet validate pass on the
 PR head b18859c and on main 9327979.
+
+## v0.4.6 (prepared 2026-11-27)
+
+- WASI p2 component as a release asset (#52, REQ-031):
+  `sieve-v0.4.6-wasm32-wasip2.wasm` is listed in the cosign-signed
+  SHA256SUMS.txt and has SLSA provenance. It is not yet signed itself
+  (sigil#396). Under WASI, main leaves through `process::exit`
+  (wasi:cli/exit exit-with-code), so usage errors exit 2 and refusals 3 as
+  they do natively. Before, every failure reached the host as 1.
+- `release-check.sh smoke-wasm` runs every native smoke gate on the
+  component under the pinned wasmtime v50.0.3, and also asserts exits 1 and
+  3 and the exit-with-code import. CI's Test job runs it on every PR.
+- Toolchain (#54): varve pin moves to realm covalent, layer 2026.11.28
+  (composes pulseengine 2026.11.45 and pulseengine-wasm 2026.11.6);
+  varve-realms.toml comes from varve v0.48.0.
+
+Evidence: under wasmtime 50.0.3 the component smoke gate fails before the
+exit fix (an unknown flag exited 1, not 2) and passes after it; Test and
+rivet validate pass on main 1a66cfa and on #54's head d4f2bae.
