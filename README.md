@@ -29,6 +29,14 @@ claim that covers it and the edge it came from (`cargo`, `include`, `literal`,
 `build-rs`, `wit`, `bazel`, `zephyr`, `symlink`, `hand`). git is read in-process
 (gix): classify starts no `git` or other process.
 
+Each release also ships `sieve-<tag>-wasm32-wasip2.wasm`, the WASI p2
+component. It is the same build CI runs the corpus through under wasmtime,
+byte for byte against the native binary. It covers paths mode only, because
+git mode fails open under WASI. Its digest is in the signed `SHA256SUMS.txt`;
+the component itself is unsigned until sigil#396. Run it with the tree
+preopened and exit codes kept:
+`wasmtime run -S cli-exit-with-code=y --dir .::. sieve-<tag>-wasm32-wasip2.wasm classify --config sieve.toml --paths <p>...`.
+
 Wire a heavy job only through this `if:` form, so that a crashed, cancelled
 or silent classifier still runs the job:
 

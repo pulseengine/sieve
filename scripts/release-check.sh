@@ -5,6 +5,9 @@
 #   release-check.sh smoke BIN TAG           the packaged binary is that version,
 #                                            meets the CLI baseline, and
 #                                            classifies a fixture both ways
+#   release-check.sh smoke-wasm WASM TAG     the same gates for the WASI component,
+#                                            run under $WASMTIME with the working
+#                                            directory preopened as .
 #
 # Exit 0 = the gate holds, 1 = it does not, 2 = usage.
 set -euo pipefail
@@ -59,8 +62,23 @@ smoke() {
   echo "release-check: $bin is sieve ${tag#v} and classifies the fixture both ways"
 }
 
+# The component through a one-line wrapper, so every smoke gate above runs
+# unchanged: the working directory is preopened as `.`, and
+# cli-exit-with-code lets usage errors exit 2 as natively.
+smoke_wasm() {
+  local wasm=$1 tag=$2 w
+  case $wasm in /*) ;; *) wasm="$PWD/$wasm" ;; esac
+  [ -n "${WASMTIME:-}" ] || die "WASMTIME is not set"
+  [ -s "$wasm" ] || die "no component at $wasm"
+  w="$(mktemp -d)/sieve"
+  printf '#!/usr/bin/env bash\nexec "%s" run -S cli-exit-with-code=y --dir "$PWD::." "%s" "$@"\n' "$WASMTIME" "$wasm" > "$w"
+  chmod +x "$w"
+  smoke "$w" "$tag"
+}
+
 case "${1:-}" in
   version-guard) [ $# = 2 ] || exit 2; version_guard "$2" ;;
   smoke) [ $# = 3 ] || exit 2; smoke "$2" "$3" ;;
-  *) echo "usage: release-check.sh version-guard TAG | smoke BIN TAG" >&2; exit 2 ;;
+  smoke-wasm) [ $# = 3 ] || exit 2; smoke_wasm "$2" "$3" ;;
+  *) echo "usage: release-check.sh version-guard TAG | smoke BIN TAG | smoke-wasm WASM TAG" >&2; exit 2 ;;
 esac
