@@ -31,12 +31,14 @@ env:
   WASMTIME_SHA256: c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476
   # Built from crates.io with --locked (scripts/lockfiles.sh audit).
   CARGO_AUDIT_VERSION: 0.22.2
-  # kiln and meld for the advisory kiln job, as in the varve layer 2026.11.43.
+  # kiln and meld for the advisory kiln job. meld is the covalent layer's;
+  # kiln is 0.9.1, the first release with the startup fix (kiln#737).
   # sha256 of the x86_64 linux archives (kiln gnu, meld musl), recorded on
-  # 2026-11-27 from each release's SHA256SUMS.txt after `cosign verify-blob`
+  # 2026-11-28 (kiln) and 2026-11-27 (meld) from each release's
+  # SHA256SUMS.txt after `cosign verify-blob`
   # against that repo's release.yml tag identity.
-  KILN_VERSION: v0.9.0
-  KILN_SHA256: 6a1e334ba319fbaaca5858d333088c0d82a13b789e7479b5af119028b5f32aaf
+  KILN_VERSION: v0.9.1
+  KILN_SHA256: 2be8b0c9f06287a658e7be6bd51434639e5d382e58f2f4ec20b701bcc5c87af5
   MELD_VERSION: v0.70.0
   MELD_SHA256: 9ff3e50d538a54fd129a8962733b766569218eb9dbb8b9be642b389b6063895c
 
@@ -105,14 +107,14 @@ jobs:
 
   # Advisory (not a required check): the corpus through the meld-fused
   # component under kiln, byte for byte against native, plus a planted
-  # control that must differ. kiln 0.9.0 predates its startup fix (about 7 s
-  # per call), so this job takes about half an hour until the layer moves.
+  # control that must differ. kiln 0.9.1 carries the startup fix (kiln#737);
+  # 0.9.0 never finished a call on the linux runner (kiln#748).
   # kiln-regression against kiln HEAD is kiln's own job (SR-129).
   kiln:
     name: kiln (advisory)
     # Fork PRs never reach self-hosted runners (fail-closed same-repo guard).
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-latest' }}
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-15
@@ -132,14 +134,6 @@ jobs:
           done
           echo "KILN=$(find "$d/kiln" -name kiln -type f | head -1)" >> "$GITHUB_ENV"
           echo "MELD=$(find "$d/meld" -name meld -type f | head -1)" >> "$GITHUB_ENV"
-      # DIAGNOSTIC for kiln#748, reverted before merge: time the 0.9.0
-      # asset's load (fused --version), then use kiln main (#737 fix).
-      - name: "diag kiln#748: build kiln main 3b977652"
-        run: |
-          echo "KILN090=$KILN" >> "$GITHUB_ENV"
-          cargo install --locked --root "$RUNNER_TEMP/kiln-main" --git https://github.com/pulseengine/kiln \
-            --rev 3b977652db209078bdf2b2619261041168d61354 kilnd --features "std,kiln-execution" --bin kiln
-          echo "KILN=$RUNNER_TEMP/kiln-main/bin/kiln" >> "$GITHUB_ENV"
       - name: build native and the component, fuse it
         run: |
           cargo build --locked
@@ -150,17 +144,8 @@ jobs:
             -o "$f/sieve.fused.wasm" --emit-import-map "$f/map.json"
           sha256sum "$f/sieve.fused.wasm"
           { echo "FUSED=$f/sieve.fused.wasm"; echo "IMPORT_MAP=$f/map.json"; } >> "$GITHUB_ENV"
-      - name: "diag kiln#748: fused sieve --version under 0.9.0 and main"
-        run: |
-          for k in "$KILN090" "$KILN"; do
-            s=$(date +%s); rc=0
-            timeout 600 "$k" --wasi --component --import-map "$IMPORT_MAP" --wasi-arg --version "$FUSED" </dev/null || rc=$?
-            echo "$("$k" --version): fused sieve --version exit $rc after $(($(date +%s) - s)) s"
-          done
       - name: planted control (the diff must be able to fail)
-        timeout-minutes: 20
-        env:
-          KILN_CALL_TIMEOUT: 900
+        timeout-minutes: 10
         run: scripts/kiln-control.sh target/debug/sieve
       - name: corpus under kiln (byte-identical to native)
         env:
@@ -170,7 +155,7 @@ jobs:
           SIEVE_WASM="$FUSED" cargo test --locked --test corpus -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/kiln.log"
           grep -q '^55/55 corpus case(s) pass (19 git-mode case(s) not run)$' "$RUNNER_TEMP/kiln.log"
           s=$(($(date +%s) - start))
-          echo "kiln $KILN_VERSION (before the startup fix, kiln#737): 55/55 paths-mode corpus cases byte-identical to native, ${s} s wall" >> "$GITHUB_STEP_SUMMARY"
+          echo "kiln $KILN_VERSION: 55/55 paths-mode corpus cases byte-identical to native, ${s} s wall" >> "$GITHUB_STEP_SUMMARY"
 
   rivet:
     name: rivet validate
