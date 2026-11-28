@@ -13,7 +13,7 @@ aho-corasick = "1"
 gix = { version = "0.90", default-features = false, features = ["sha1", "index", "revision", "blob-diff"] }
 regex = "1"
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 toml = "1.2"
 # rivet's own YAML (owner: a git dependency until upstream rowan is sound)
 rivet-yaml = { git = "https://github.com/pulseengine/rivet", rev = "5072986f55c3457b27c7f8a4afd79a952fb0ab58" } # tag v0.43.0

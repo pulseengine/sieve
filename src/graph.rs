@@ -1353,7 +1353,7 @@ pub fn bazel_fingerprint(repo: &Repo, files: &[String]) -> String {
         }
         h.update(b"\0");
     }
-    format!("{:x}", h.finalize())
+    crate::repo::hex(&h.finalize())
 }
 
 /// Whether the root manifest in `root_dir` excludes the package directory

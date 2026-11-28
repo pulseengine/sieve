@@ -134,7 +134,7 @@ pub fn inputs_hash(cfg: &Config, g: &Graph) -> String {
             h.update(u.to_string().as_bytes());
         }
     }
-    format!("{:x}", h.finalize())
+    crate::repo::hex(&h.finalize())
 }
 
 /// The base and head commits of a change set, when known (git mode and the
