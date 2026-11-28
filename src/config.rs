@@ -189,7 +189,7 @@ pub fn parse(text: &str, rel_path: &str) -> Result<Config> {
             .map(|s| s.to_string())
             .collect(),
         run_all_dirs: DEFAULT_RUN_ALL_DIRS.iter().map(|s| s.to_string()).collect(),
-        digest: format!("{:x}", Sha256::digest(text.as_bytes())),
+        digest: crate::repo::hex(&Sha256::digest(text.as_bytes())),
         ..Default::default()
     };
     c.run_all_files.push(rel_path.to_string());
