@@ -586,7 +586,7 @@ fn cross_class_check(r: &mut Report, builds: &[CargoBuild], root: &Path, cfg: &C
         .filter(|f| crate::repo::basename(f) == "Cargo.toml")
     {
         let Ok(text) = repo.read(f) else { continue };
-        let Ok(v) = text.parse::<toml::Value>() else {
+        let Ok(v) = toml::from_str::<toml::Value>(&text) else {
             continue;
         };
         if let Some(n) = v
