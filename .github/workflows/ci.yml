@@ -17,7 +17,7 @@ defaults:
 env:
   CARGO_TERM_COLOR: never
   # The rivet release CI validates with; matches the varve.toml
-  # layer (covalent 2026.11.28, which composes pulseengine 2026.11.45).
+  # layer (covalent 2026.11.29, which composes pulseengine 2026.11.46).
   RIVET_VERSION: v0.43.3
   # sha256 of rivet-v0.43.3-x86_64-unknown-linux-gnu.tar.gz, recorded on
   # 2026-11-26 from the release's SHA256SUMS.txt after `cosign verify-blob`
